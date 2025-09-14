@@ -1,6 +1,4 @@
-(\* ========================================================================= *)
-(* ENGLISH DRAUGHTS (CHECKERS) — FORMAL SPECIFICATION WITH VALIDATION        *)
-(* ========================================================================= \*)
+ENGLISH DRAUGHTS (CHECKERS) — FORMAL SPECIFICATION WITH VALIDATION
 
 SECTION 1: FOUNDATIONS AND METATHEORY
 
