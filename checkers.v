@@ -1453,3 +1453,116 @@ Proof.
   - (* AgreeDraw *)
     exact I.
 Qed.
+
+(* ========================================================================= *)
+(* SECTION 13: APPLYING MOVES                                               *)
+(* ========================================================================= *)
+
+(* Helper: promote a piece to King *)
+Definition promote_piece (pc : Piece) : Piece :=
+  {| pc_color := pc_color pc; pc_kind := King |}.
+
+(* Helper: check if a move is a capture *)
+Definition is_capture_move (m : Move) : bool :=
+  match m with
+  | Jump _ _ => true
+  | _ => false
+  end.
+
+(* Helper: check if a move is a man forward step *)
+Definition is_man_forward_step (b : Board) (m : Move) : bool :=
+  match m with
+  | Step from to =>
+    match piece_at b from with
+    | Some pc =>
+      match pc_kind pc with
+      | Man => forward_of_dec (pc_color pc) (rank from) (rank to)
+      | King => false
+      end
+    | None => false
+    end
+  | _ => false
+  end.
+
+(* Helper: apply a step move to the board *)
+Definition apply_step (b : Board) (from to : Position) : Board :=
+  match piece_at b from with
+  | Some pc =>
+    let pc' := if reaches_crown_head pc to then promote_piece pc else pc in
+    board_set (board_set b from None) to (Some pc')
+  | None => b  (* Should not happen for legal moves *)
+  end.
+
+(* Helper: apply a jump chain to the board *)
+Definition apply_jump (b : Board) (from : Position) (ch : JumpChain) : Board :=
+  match piece_at b from with
+  | Some pc =>
+    let last_pos := last_landing from ch in
+    let pc' := if reaches_crown_head pc last_pos then promote_piece pc else pc in
+    (* Remove all captured pieces and move the jumping piece *)
+    let b_cleared := fold_left (fun b' over => board_set b' over None) (captures_of ch) b in
+    board_set (board_set b_cleared from None) last_pos (Some pc')
+  | None => b  (* Should not happen for legal moves *)
+  end.
+
+(* Main transition function: apply a move to get the next game state *)
+Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
+  if legal_move_impl st m then
+    match m with
+    | Step from to =>
+      let new_board := apply_step (board st) from to in
+      let new_ply :=
+        if is_capture_move m || is_man_forward_step (board st) m then
+          0%nat  (* Reset counter on capture or man advance *)
+        else
+          S (ply_without_capture_or_man_advance st)
+      in
+      let new_key := (new_board, opp (turn st)) in
+      Some (mkGameState
+        new_board
+        (opp (turn st))
+        new_ply
+        (new_key :: repetition_book st))
+    | Jump from ch =>
+      let new_board := apply_jump (board st) from ch in
+      let new_key := (new_board, opp (turn st)) in
+      Some (mkGameState
+        new_board
+        (opp (turn st))
+        0%nat  (* Reset counter on capture *)
+        (new_key :: repetition_book st))
+    | Resign c =>
+      (* Resignation is a valid move that ends the game *)
+      (* The resigning player's opponent wins *)
+      (* Return the state unchanged but with turn indicating the result *)
+      Some st
+    | AgreeDraw =>
+      (* Draw agreement is a valid terminal move *)
+      Some st
+    end
+  else None.
+
+(* Validation for Section 13 *)
+Example apply_legal_succeeds : forall st m,
+  WFState st ->
+  legal_move_impl st m = true ->
+  exists st', apply_move_impl st m = Some st'.
+Proof.
+  intros st m Hwf Hlegal.
+  unfold apply_move_impl.
+  rewrite Hlegal.
+  destruct m; eexists; reflexivity.
+Qed.
+
+(* ========================================================================= *)
+(* SECTION 14: MOVE GENERATION                                              *)
+(* ========================================================================= *)
+
+(* Generate all possible step moves from a position *)
+Definition gen_steps_from (b : Board) (pc : Piece) (from : Position) : list Move :=
+  filter (fun m =>
+    match m with
+    | Step f t => step_impl b pc f t
+    | _ => false
+    end
+  ) (map (Step from) enum_pos).
