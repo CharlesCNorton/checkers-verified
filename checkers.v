@@ -2172,3 +2172,116 @@ Proof.
   destruct (Fin.to_nat f) as [n H].
   exact H.
 Qed.
+
+Lemma sq_index_positive : forall p,
+  (1 <= sq_index p)%nat.
+Proof.
+  intro p.
+  unfold sq_index.
+  simpl.
+  apply Nat.lt_0_succ.
+Qed.
+
+Lemma fin8_to_nat_max : forall f : Fin8,
+  (fin8_to_nat f <= 7)%nat.
+Proof.
+  intro f.
+  unfold fin8_to_nat.
+  destruct (Fin.to_nat f) as [n H].
+  simpl.
+  lia.
+Qed.
+
+Lemma rank_times_4_bounded : forall r : Fin8,
+  (fin8_to_nat r * 4 <= 28)%nat.
+Proof.
+  intro r.
+  assert (H: (fin8_to_nat r <= 7)%nat) by apply fin8_to_nat_max.
+  lia.
+Qed.
+
+Lemma file_div_2_bounded_even : forall f : Fin8,
+  (fin8_to_nat f / 2 <= 3)%nat.
+Proof.
+  intro f.
+  assert (H: (fin8_to_nat f <= 7)%nat) by apply fin8_to_nat_max.
+  destruct (fin8_to_nat f) eqn:E; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  exfalso.
+  assert (fin8_to_nat f >= 8)%nat.
+  { rewrite E. simpl. apply le_n_S, le_n_S, le_n_S, le_n_S.
+    apply le_n_S, le_n_S, le_n_S, le_n_S, Nat.le_0_l. }
+  lia.
+Qed.
+
+Lemma file_div_2_bounded_odd : forall f : Fin8,
+  (S (fin8_to_nat f) / 2 <= 4)%nat.
+Proof.
+  intro f.
+  assert (H: (fin8_to_nat f <= 7)%nat) by apply fin8_to_nat_max.
+  destruct (fin8_to_nat f) eqn:E; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  exfalso.
+  assert (fin8_to_nat f >= 8)%nat.
+  { rewrite E. simpl. apply le_n_S, le_n_S, le_n_S, le_n_S.
+    apply le_n_S, le_n_S, le_n_S, le_n_S, Nat.le_0_l. }
+  lia.
+Qed.
+
+Lemma divmod_bound : forall n,
+  (n <= 7)%nat ->
+  (fst (Nat.divmod n 1 0 1) <= 3)%nat.
+Proof.
+  intros n Hn.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  exfalso. lia.
+Qed.
+
+Lemma divmod_S_bound : forall n,
+  (n <= 7)%nat ->
+  (fst (Nat.divmod (S n) 1 0 1) <= 4)%nat.
+Proof.
+  intros n Hn.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  destruct n; simpl; auto.
+  exfalso. lia.
+Qed.
+
+Example parse_print_works_for_9_14 :
+  let st := initial_state in
+  match get_position_from_number 9, get_position_from_number 14 with
+  | Some from, Some to =>
+    parse_numeric (move_to_numeric st (Step from to)) st = Some (Step from to)
+  | _, _ => True
+  end.
+Proof.
+  simpl.
+  vm_compute.
+  reflexivity.
+Qed.
+                        
