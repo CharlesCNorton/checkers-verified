@@ -2825,9 +2825,33 @@ Proof.
     unfold man_weight, king_weight.
     assert (HMax: Z.max 1 3 = 3) by (unfold Z.max; simpl; reflexivity).
     rewrite HMax.
-    apply Z.le_trans with (32 * man_weight + 32 * king_weight).
+    apply Z.le_trans with (32 * 1 + 32 * 3).
     + apply Z.add_le_mono.
-      * apply Z.mul_le_mono_nonneg_r; [unfold man_weight; lia | exact Hmen].
-      * apply Z.mul_le_mono_nonneg_r; [unfold king_weight; lia | exact Hkings].
-    + unfold man_weight, king_weight. simpl. lia.
+      * apply Z.mul_le_mono_nonneg_r; [lia | exact Hmen].
+      * apply Z.mul_le_mono_nonneg_r; [lia | exact Hkings].
+    + simpl. unfold Z.le. simpl. intro. discriminate.
 Qed.
+
+Lemma filter_In : forall A (f : A -> bool) (l : list A) x,
+  In x (filter f l) <-> In x l /\ f x = true.
+Proof.
+  intros A f l x.
+  split.
+  - intro H. induction l.
+    + simpl in H. contradiction.
+    + simpl in H. destruct (f a) eqn:E.
+      * simpl in H. destruct H.
+        -- subst. split; [left; reflexivity | exact E].
+        -- apply IHl in H. destruct H. split; [right; exact H | exact H0].
+      * apply IHl in H. destruct H. split; [right; exact H | exact H0].
+  - intros [Hin Hf]. induction l as [|a l IHl].
+    + simpl in Hin. contradiction.
+    + simpl. destruct (f a) eqn:Efa.
+      * destruct Hin as [Ha | Hin'].
+        -- subst. left. reflexivity.
+        -- right. apply IHl. exact Hin'.
+      * destruct Hin as [Ha | Hin'].
+        -- subst. rewrite Hf in Efa. discriminate.
+        -- apply IHl. exact Hin'.
+Qed.
+                       
