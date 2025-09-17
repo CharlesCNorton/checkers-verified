@@ -606,3 +606,237 @@ Defined.
 Next Obligation.
   apply enum_pos_nodup.
 Defined.
+(* ========================================================================= *)
+(* SECTION 4: CORE GAME ONTOLOGY                                            *)
+(* ========================================================================= *)
+
+Inductive Color :=
+| Dark
+| Light.
+
+Inductive PieceKind :=
+| Man
+| King.
+
+Record Piece := mkPiece {
+  pc_color : Color;
+  pc_kind : PieceKind
+}.
+
+Definition opp (c : Color) : Color :=
+  match c with
+  | Dark => Light
+  | Light => Dark
+  end.
+
+Lemma opp_involutive : forall c, opp (opp c) = c.
+Proof.
+  destruct c; reflexivity.
+Qed.
+
+Instance Color_eq_dec : EqDec Color eq.
+Proof.
+  intros x y.
+  destruct x, y; (left; reflexivity) || (right; discriminate).
+Defined.
+
+Instance PieceKind_eq_dec : EqDec PieceKind eq.
+Proof.
+  intros x y.
+  destruct x, y; (left; reflexivity) || (right; discriminate).
+Defined.
+
+Instance Piece_eq_dec : EqDec Piece eq.
+Proof.
+  intros [xc xk] [yc yk].
+  destruct (Color_eq_dec xc yc) as [Hc|Hc],
+           (PieceKind_eq_dec xk yk) as [Hk|Hk].
+  - rewrite Hc. rewrite Hk. left. reflexivity.
+  - rewrite Hc. right. intro Heq. inversion Heq. contradiction.
+  - rewrite Hk. right. intro Heq. inversion Heq. contradiction.
+  - right. intro Heq. inversion Heq. contradiction.
+Defined.
+
+Program Instance Finite_Color : Finite Color := {
+  enum := [Dark; Light]
+}.
+
+(* Complete Finite_Color instance *)
+Next Obligation.
+  destruct x; simpl; auto.
+Defined.
+Next Obligation.
+  repeat constructor; simpl; intuition discriminate.
+Defined.
+
+(* Finite instance for PieceKind *)
+Program Instance Finite_PieceKind : Finite PieceKind := {
+  enum := [Man; King]
+}.
+Next Obligation.
+  destruct x; simpl; auto.
+Defined.
+Next Obligation.
+  repeat constructor; simpl; intuition discriminate.
+Defined.
+
+(* Exhaustiveness lemmas for case analysis *)
+Lemma Color_cases : forall (P : Color -> Prop),
+  P Dark -> P Light -> forall c, P c.
+Proof.
+  intros P HD HL c.
+  destruct c; assumption.
+Qed.
+
+Lemma PieceKind_cases : forall (P : PieceKind -> Prop),
+  P Man -> P King -> forall k, P k.
+Proof.
+  intros P HM HK k.
+  destruct k; assumption.
+Qed.
+
+(* Validation example with exact name from spec *)
+Example opposite_color_involutive : forall c, opp (opp c) = c.
+Proof.
+  apply opp_involutive.
+Qed.
+
+(* ========================================================================= *)
+(* SECTION 5: BOARD ABSTRACTION                                             *)
+(* ========================================================================= *)
+
+(* Board as total map from positions to optional pieces *)
+Definition Board := Position -> option Piece.
+
+(* Board extensional equality *)
+Definition board_eq (b1 b2 : Board) : Prop :=
+  forall p : Position, b1 p = b2 p.
+
+(* Notation for board equality *)
+Notation "b1 ≈ b2" := (board_eq b1 b2) (at level 70).
+
+(* Prove that board_eq is an equivalence relation *)
+Instance Board_Equivalence : Equivalence board_eq.
+Proof.
+  constructor.
+  - (* reflexive *)
+    unfold Reflexive, board_eq. intros b p. reflexivity.
+  - (* symmetric *)
+    unfold Symmetric, board_eq. intros b1 b2 H p. symmetry. apply H.
+  - (* transitive *)
+    unfold Transitive, board_eq. intros b1 b2 b3 H12 H23 p.
+    rewrite H12. apply H23.
+Qed.
+
+(* Setoid instance for board equality *)
+Instance Board_Setoid : Setoid Board := {
+  equiv := board_eq
+}.
+
+(* Decidable equality for Position *)
+Instance Position_eq_dec : EqDec Position eq.
+Proof.
+  intros p1 p2.
+  destruct (Fin_eq_dec (rank p1) (rank p2)) as [Hr|Hr],
+           (Fin_eq_dec (file p1) (file p2)) as [Hf|Hf].
+  - left. apply position_eq; assumption.
+  - right. intro H. apply Hf. rewrite <- H. reflexivity.
+  - right. intro H. apply Hr. rewrite <- H. reflexivity.
+  - right. intro H. apply Hr. rewrite <- H. reflexivity.
+Defined.
+
+(* Board update operation *)
+Definition board_set (b : Board) (p : Position) (pc : option Piece) : Board :=
+  fun p' => if equiv_dec p p' then pc else b p'.
+
+(* Board get operation *)
+Definition board_get (b : Board) (p : Position) : option Piece :=
+  b p.
+  
+(* Update property: idempotence *)
+Lemma board_set_idempotent : forall b p pc,
+  board_set (board_set b p pc) p pc ≈ board_set b p pc.
+Proof.
+  unfold board_eq, board_set. intros b p pc p'.
+  destruct (equiv_dec p p'); reflexivity.
+Qed.
+
+(* Update property: commutativity on distinct squares *)
+Lemma board_set_commute : forall b p1 p2 pc1 pc2,
+  p1 <> p2 ->
+  board_set (board_set b p1 pc1) p2 pc2 ≈ board_set (board_set b p2 pc2) p1 pc1.
+Proof.
+  unfold board_eq, board_set. intros b p1 p2 pc1 pc2 Hneq p.
+  destruct (equiv_dec p1 p) as [H1|H1], (equiv_dec p2 p) as [H2|H2]; try reflexivity.
+  exfalso. apply Hneq. 
+  unfold equiv in H1, H2. simpl in H1, H2.
+  congruence.
+Qed.
+
+(* Board predicates *)
+Definition occupied (b : Board) (p : Position) : bool :=
+  match b p with
+  | Some _ => true
+  | None => false
+  end.
+  
+Definition occupied_by (b : Board) (c : Color) (p : Position) : bool :=
+  match b p with
+  | Some pc => if Color_eq_dec (pc_color pc) c then true else false
+  | None => false
+  end.
+  
+(* Helper to convert index to rank and file *)
+Definition index_to_coords (n : nat) : option (Rank * File) :=
+  match n with
+  | O => None
+  | S n' => 
+    if Nat.leb (S n') 32 then
+      let idx := n' in (* 0-based index *)
+      let r := Nat.div idx 4 in
+      let f_offset := Nat.mul (Nat.modulo idx 4) 2 in
+      let f := if Nat.even r then S f_offset else f_offset in
+      match lt_dec r 8, lt_dec f 8 with
+      | left Hr, left Hf => Some (@fin8_of_nat r Hr, @fin8_of_nat f Hf)
+      | _, _ => None
+      end
+    else None
+  end.
+  
+(* Convert bounded index (1..32) to Position *)
+Definition pos_of_index (n : {x : nat | (1 <= x)%nat /\ (x <= 32)%nat}) : option Position :=
+  match index_to_coords (proj1_sig n) with
+  | Some (r, f) => mk_pos r f
+  | None => None
+  end.
+  
+(* Helper: get square index (1..32) from a Position *)
+Definition sq_index (p : Position) : nat :=
+  let r := fin8_to_nat (rank p) in
+  let f := fin8_to_nat (file p) in
+  (* Calculate the index based on standard checkers numbering *)
+  let row_base := Nat.mul r 4 in
+  let col_offset := Nat.div (if Nat.even r then f else S f) 2 in
+  S (row_base + col_offset).
+  
+(* Initial board setup *)
+Definition initial_board : Board :=
+  fun p =>
+    let idx := sq_index p in
+    if Nat.leb idx 12 then
+      Some {| pc_color := Dark; pc_kind := Man |}
+    else if andb (Nat.leb 21 idx) (Nat.leb idx 32) then
+      Some {| pc_color := Light; pc_kind := Man |}
+    else
+      None.
+      
+(* Validation example for Section 5 *)
+Example board_update_retrieve :
+  forall b p pc, board_get (board_set b p (Some pc)) p = Some pc.
+Proof.
+  intros b p pc.
+  unfold board_get, board_set.
+  destruct (equiv_dec p p) as [H|H].
+  - reflexivity.
+  - exfalso. apply H. reflexivity.
+Qed.
