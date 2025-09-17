@@ -2034,4 +2034,217 @@ Definition move_to_numeric (st : GameState) (m : Move) : string :=
     end
   | AgreeDraw => "Draw"%string
   end.
-  
+
+(* Validation: Test simple step move notation *)
+Example step_notation_test :
+  match get_position_from_number 9, get_position_from_number 14 with
+  | Some from, Some to =>
+    move_to_numeric initial_state (Step from to) = "9-14"%string
+  | _, _ => True
+  end.
+Proof.
+  unfold get_position_from_number, move_to_numeric, position_to_string.
+  simpl.
+  (* This should compute to "9-14" *)
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Helper: parse a digit character to nat *)
+Definition digit_of_ascii (c : ascii) : option nat :=
+  let n := Ascii.nat_of_ascii c in
+  if andb (Nat.leb 48 n) (Nat.leb n 57) then
+    Some (Nat.sub n 48)
+  else
+    None.
+
+(* Helper: parse a nat from string *)
+Fixpoint parse_nat_aux (s : string) (acc : nat) : option nat :=
+  match s with
+  | EmptyString => Some acc
+  | String c rest =>
+    match digit_of_ascii c with
+    | Some d => parse_nat_aux rest (acc * 10 + d)
+    | None => None
+    end
+  end.
+
+Definition parse_nat (s : string) : option nat :=
+  match s with
+  | EmptyString => None
+  | _ => parse_nat_aux s 0
+  end.
+
+(* Helper: split string at first occurrence of separator *)
+Fixpoint split_at_char (s : string) (sep : ascii) : (string * option string) :=
+  match s with
+  | EmptyString => (EmptyString, None)
+  | String c rest =>
+    if Ascii.eqb c sep then
+      (EmptyString, Some rest)
+    else
+      let (before, after) := split_at_char rest sep in
+      (String c before, after)
+  end.
+
+(* Parse a move from PDN notation *)
+Definition parse_numeric (s : string) (st : GameState) : option Move :=
+  (* Check for special moves first *)
+  if String.eqb s "Draw"%string then
+    Some AgreeDraw
+  else if String.eqb s "Dark resigns"%string then
+    Some (Resign Dark)
+  else if String.eqb s "Light resigns"%string then
+    Some (Resign Light)
+  else
+    (* Try to parse as a regular move *)
+    (* First, check if it's a step (contains '-') or jump (contains 'x') *)
+    let dash := Ascii.ascii_of_nat 45 in  (* '-' *)
+    let x_char := Ascii.ascii_of_nat 120 in  (* 'x' *)
+    let (before_dash, after_dash) := split_at_char s dash in
+    match after_dash with
+    | Some rest =>
+      (* It's a step move: parse "from-to" *)
+      match parse_nat before_dash, parse_nat rest with
+      | Some from_num, Some to_num =>
+        match get_position_from_number from_num, get_position_from_number to_num with
+        | Some from, Some to => Some (Step from to)
+        | _, _ => None
+        end
+      | _, _ => None
+      end
+    | None =>
+      (* Check if it's a jump move *)
+      let (before_x, after_x) := split_at_char s x_char in
+      match after_x with
+      | Some rest =>
+        (* It's a jump move: parse "fromxto[xto2...]" *)
+        match parse_nat before_x with
+        | Some from_num =>
+          match get_position_from_number from_num with
+          | Some from =>
+            (* Parse the chain of captures - simplified without inner recursion *)
+            (* For a single jump, just parse the target *)
+            match parse_nat rest with
+            | Some to_num =>
+              match get_position_from_number to_num with
+              | Some to_pos =>
+                (* Find the over position *)
+                match find (fun over =>
+                  andb (if diag_adj_dec from over then true else false)
+                       (if diag_adj_dec over to_pos then true else false)
+                ) enum_pos with
+                | Some over =>
+                  let link := existT (fun _ => Position) over to_pos in
+                  Some (Jump from [link])
+                | None => None
+                end
+              | None => None
+              end
+            | None => None
+            end
+          | None => None
+          end
+        | None => None
+        end
+      | None => None
+      end
+    end.
+
+Lemma nat_to_string_parse_nat_small : forall n,
+  (n <= 32)%nat ->
+  parse_nat (nat_to_string n) = Some n.
+Proof.
+  intros n Hn.
+  assert (n = 0 \/ n = 1 \/ n = 2 \/ n = 3 \/ n = 4 \/ n = 5 \/ n = 6 \/ n = 7 \/
+          n = 8 \/ n = 9 \/ n = 10 \/ n = 11 \/ n = 12 \/ n = 13 \/ n = 14 \/ n = 15 \/
+          n = 16 \/ n = 17 \/ n = 18 \/ n = 19 \/ n = 20 \/ n = 21 \/ n = 22 \/ n = 23 \/
+          n = 24 \/ n = 25 \/ n = 26 \/ n = 27 \/ n = 28 \/ n = 29 \/ n = 30 \/ n = 31 \/ n = 32)%nat by lia.
+  destruct H as [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]];
+  rewrite H; vm_compute; reflexivity.
+Qed.
+
+Lemma fin8_to_nat_bounded : forall f : Fin8,
+  (fin8_to_nat f < 8)%nat.
+Proof.
+  intro f.
+  unfold fin8_to_nat.
+  destruct (Fin.to_nat f) as [n H].
+  exact H.
+Qed.
+
+Lemma sq_index_bounded : forall p,
+  (1 <= sq_index p <= 32)%nat.
+Proof.
+  intro p.
+  destruct p as [r f Hd].
+  unfold sq_index; simpl.
+  destruct r; destruct f; simpl; auto.
+Qed.
+
+Lemma get_position_sq_index : forall p,
+  get_position_from_number (sq_index p) = Some p.
+Proof.
+  intro p.
+  unfold get_position_from_number.
+  simpl.
+  assert (Hb: (1 <= sq_index p <= 32)%nat) by apply sq_index_bounded.
+  destruct (andb (Nat.leb 1 (sq_index p)) (Nat.leb (sq_index p) 32)) eqn:E.
+  - unfold find.
+    assert (exists q, In q enum_pos /\ sq_index q = sq_index p).
+    { exists p. split. apply enum_pos_complete. reflexivity. }
+    clear Hb E.
+    induction enum_pos as [|h t IH].
+    + destruct H as [q [Hq _]]. contradiction.
+    + simpl.
+      destruct (Nat.eqb (sq_index h) (sq_index p)) eqn:Eeq.
+      * rewrite Nat.eqb_eq in Eeq.
+        destruct H as [q [Hq Heq]].
+        simpl in Hq. destruct Hq.
+        -- subst. rewrite <- Heq in Eeq.
+           assert (h = p).
+           {
+             clear -Eeq.
+             destruct h as [r1 f1 H1].
+             destruct p as [r2 f2 H2].
+             apply position_eq.
+             - unfold rank. simpl.
+               unfold sq_index in Eeq. simpl in Eeq.
+               clear H1 H2.
+               apply fin8_cases with (f := r1);
+               apply fin8_cases with (f := r2);
+               vm_compute in Eeq; try discriminate; try reflexivity.
+             - unfold file. simpl.
+               unfold sq_index in Eeq. simpl in Eeq.
+               clear H1 H2.
+               apply fin8_cases with (f := f1);
+               apply fin8_cases with (f := f2);
+               vm_compute in Eeq; try discriminate; try reflexivity.
+           }
+           subst. reflexivity.
+        -- apply IH. exists q. split; assumption.
+      * apply IH.
+        destruct H as [q [Hq Heq]].
+        simpl in Hq.
+        destruct Hq.
+        -- subst. rewrite <- Heq in Eeq.
+           rewrite Nat.eqb_refl in Eeq. discriminate.
+        -- exists q. split; assumption.
+  - exfalso.
+    rewrite andb_false_iff in E.
+    destruct E; rewrite Nat.leb_nle in H; lia.
+Qed.
+
+Example parse_print_works_for_9_14 :
+  let st := initial_state in
+  match get_position_from_number 9, get_position_from_number 14 with
+  | Some from, Some to =>
+    parse_numeric (move_to_numeric st (Step from to)) st = Some (Step from to)
+  | _, _ => True
+  end.
+Proof.
+  simpl.
+  vm_compute.
+  reflexivity.
+Qed.
+                        
