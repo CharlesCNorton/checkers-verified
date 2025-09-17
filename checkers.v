@@ -2138,6 +2138,71 @@ Fixpoint split_at_char (s : string) (sep : ascii) : (string * option string) :=
       (String c before, after)
   end.
 
+(* Helper: Find the intermediate 'over' position for a jump from->to *)
+Definition find_over_position (from to : Position) : option Position :=
+  (* The over position must be:
+     1. Diagonally adjacent to both from and to
+     2. Exactly in the middle (geometrically) *)
+  let r_from := rankZ (rank from) in
+  let f_from := fileZ (file from) in
+  let r_to := rankZ (rank to) in
+  let f_to := fileZ (file to) in
+  (* Check if it's a valid jump distance (2 squares diagonally) *)
+  if andb (Z.eqb (Z.abs (r_to - r_from)) 2) (Z.eqb (Z.abs (f_to - f_from)) 2) then
+    (* Calculate middle position *)
+    let r_mid := (r_from + r_to) / 2 in
+    let f_mid := (f_from + f_to) / 2 in
+    (* Convert back to position *)
+    if andb (andb (0 <=? r_mid) (r_mid <? 8)) (andb (0 <=? f_mid) (f_mid <? 8)) then
+      match Z.to_nat r_mid, Z.to_nat f_mid with
+      | r_nat, f_nat =>
+        match lt_dec r_nat 8, lt_dec f_nat 8 with
+        | left Hr, left Hf =>
+          mk_pos (fin8_of_nat Hr) (fin8_of_nat Hf)
+        | _, _ => None
+        end
+      end
+    else None
+  else None.
+
+(* Recursively parse a jump chain from PDN notation like "15x22x31" *)
+Fixpoint parse_jump_chain_aux (from : Position) (rest : string) (acc : JumpChain)
+                              (fuel : nat) : option JumpChain :=
+  match fuel with
+  | O => None  (* Out of fuel - prevent infinite recursion *)
+  | S fuel' =>
+    match split_at_char rest (Ascii.ascii_of_nat 120) with  (* 'x' *)
+    | (to_str, maybe_rest) =>
+      match parse_nat to_str with
+      | Some to_num =>
+        match get_position_from_number to_num with
+        | Some to_pos =>
+          (* Find the intermediate 'over' position *)
+          match find_over_position from to_pos with
+          | Some over =>
+            let link := existT (fun _ => Position) over to_pos in
+            let new_chain := acc ++ [link] in
+            match maybe_rest with
+            | Some more =>
+              (* Continue parsing the chain *)
+              parse_jump_chain_aux to_pos more new_chain fuel'
+            | None =>
+              (* End of chain *)
+              Some new_chain
+            end
+          | None => None  (* Invalid jump geometry *)
+          end
+        | None => None  (* Invalid square number *)
+        end
+      | None => None  (* Failed to parse number *)
+      end
+    end
+  end.
+
+(* Parse a complete jump chain starting from a position *)
+Definition parse_jump_chain (from : Position) (rest : string) : option JumpChain :=
+  parse_jump_chain_aux from rest [] 32.  (* Max 32 jumps should be enough *)
+
 (* Parse a move from PDN notation *)
 Definition parse_numeric (s : string) (st : GameState) : option Move :=
   (* Check for special moves first *)
@@ -2174,24 +2239,9 @@ Definition parse_numeric (s : string) (st : GameState) : option Move :=
         | Some from_num =>
           match get_position_from_number from_num with
           | Some from =>
-            (* Parse the chain of captures - simplified without inner recursion *)
-            (* For a single jump, just parse the target *)
-            match parse_nat rest with
-            | Some to_num =>
-              match get_position_from_number to_num with
-              | Some to_pos =>
-                (* Find the over position *)
-                match find (fun over =>
-                  andb (if diag_adj_dec from over then true else false)
-                       (if diag_adj_dec over to_pos then true else false)
-                ) enum_pos with
-                | Some over =>
-                  let link := existT (fun _ => Position) over to_pos in
-                  Some (Jump from [link])
-                | None => None
-                end
-              | None => None
-              end
+            (* Parse the complete jump chain *)
+            match parse_jump_chain from rest with
+            | Some chain => Some (Jump from chain)
             | None => None
             end
           | None => None
@@ -2335,3 +2385,34 @@ Proof.
   vm_compute.
   reflexivity.
 Qed.
+
+(* Test parsing a multi-jump chain *)
+Example parse_multi_jump_test :
+  let test_str := "9x18x27"%string in
+  match parse_numeric test_str initial_state with
+  | Some (Jump from chain) =>
+    (* Check that we got a 2-jump chain from square 9 *)
+    andb (Nat.eqb (sq_index from) 9)
+         (Nat.eqb (List.length chain) 2)
+  | _ => false
+  end = true.
+Proof.
+  unfold parse_numeric, parse_jump_chain, parse_jump_chain_aux.
+  simpl.
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Test that we can parse and print special moves correctly *)
+Example parse_print_resign : forall st,
+  parse_numeric "Dark resigns"%string st = Some (Resign Dark).
+Proof.
+  intro st. simpl. reflexivity.
+Qed.
+
+Example parse_print_draw : forall st,
+  parse_numeric "Draw"%string st = Some AgreeDraw.
+Proof.
+  intro st. simpl. reflexivity.
+Qed.
+       
