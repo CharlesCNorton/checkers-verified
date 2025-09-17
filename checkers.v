@@ -1566,3 +1566,162 @@ Definition gen_steps_from (b : Board) (pc : Piece) (from : Position) : list Move
     | _ => false
     end
   ) (map (Step from) enum_pos).
+
+(* Helper: find all possible single jumps from a position *)
+Definition find_single_jumps (b : Board) (pc : Piece) (from : Position) : list (Position * Position) :=
+  flat_map (fun over =>
+    map (fun to => (over, to))
+      (filter (fun to => jump_impl b pc from over to) enum_pos)
+  ) enum_pos.
+
+(* Build all maximal jump chains from a position *)
+(* This is recursive and builds only chains that are maximal *)
+Fixpoint build_maximal_chains_aux
+  (fuel : nat) (* Termination fuel *)
+  (b : Board)
+  (pc : Piece)
+  (from : Position)
+  (chain_so_far : JumpChain)
+  (captured_so_far : list Position) : list JumpChain :=
+  match fuel with
+  | 0%nat => [chain_so_far] (* Out of fuel, return current chain *)
+  | S fuel' =>
+    (* Check if promotion would occur here *)
+    if reaches_crown_head pc from then
+      [chain_so_far] (* Chain ends at promotion *)
+    else
+      (* Find possible continuations *)
+      let possible_jumps := find_single_jumps b pc from in
+      let valid_jumps := filter (fun jump =>
+        let over := fst jump in
+        let to := snd jump in
+        (* Check: not already captured and landing is empty *)
+        negb (existsb (position_eqb over) captured_so_far) &&
+        negb (occupied b to)
+      ) possible_jumps in
+      match valid_jumps with
+      | [] => [chain_so_far] (* No more jumps, chain is maximal *)
+      | _ =>
+        (* Extend chain with each possible jump *)
+        flat_map (fun jump =>
+          let over := fst jump in
+          let to := snd jump in
+          let new_link := existT (fun _ => Position) over to in
+          build_maximal_chains_aux fuel' b pc to
+            (chain_so_far ++ [new_link])
+            (over :: captured_so_far)
+        ) valid_jumps
+      end
+  end.
+
+(* Main function to build maximal chains from a position *)
+Definition build_maximal_chains (b : Board) (pc : Piece) (from : Position) : list JumpChain :=
+  (* Check if there's at least one jump available *)
+  if exists_jump_from b pc from then
+    (* Use fuel = 32 (max possible chain length) *)
+    let chains := build_maximal_chains_aux 32 b pc from [] [] in
+    (* Filter out empty chains *)
+    filter (fun ch => negb (match ch with [] => true | _ => false end)) chains
+  else
+    [].
+
+(* Generate all jump moves for the side to move *)
+Definition gen_jumps (st : GameState) : list Move :=
+  flat_map (fun from =>
+    match piece_at (board st) from with
+    | Some pc =>
+      if Color_eq_dec (pc_color pc) (turn st) then
+        map (Jump from) (build_maximal_chains (board st) pc from)
+      else []
+    | None => []
+    end
+  ) enum_pos.
+
+(* Generate all step moves for the side to move *)
+Definition gen_steps (st : GameState) : list Move :=
+  flat_map (fun from =>
+    match piece_at (board st) from with
+    | Some pc =>
+      if Color_eq_dec (pc_color pc) (turn st) then
+        gen_steps_from (board st) pc from
+      else []
+    | None => []
+    end
+  ) enum_pos.
+
+(* Main move generator with forcing rule *)
+Definition generate_moves_impl (st : GameState) : list Move :=
+  let jumps := gen_jumps st in
+  match jumps with
+  | [] => gen_steps st  (* No jumps available, generate steps *)
+  | _ => jumps           (* Jumps available, must jump *)
+  end.
+
+(* Validation for Section 14 *)
+Example move_gen_respects_forcing : forall st,
+  gen_jumps st <> [] ->
+  generate_moves_impl st = gen_jumps st.
+Proof.
+  intros st Hjumps.
+  unfold generate_moves_impl.
+  destruct (gen_jumps st) eqn:E.
+  - contradiction.
+  - reflexivity.
+Qed.
+
+(* ========================================================================= *)
+(* SECTION 15: GAME TREE PROPERTIES                                         *)
+(* ========================================================================= *)
+
+(* One-step reachability via a legal move *)
+Definition step_reachable (st1 st2 : GameState) : Prop :=
+  exists m, legal_move_impl st1 m = true /\ apply_move_impl st1 m = Some st2.
+
+(* Reflexive-transitive closure of legal moves *)
+Inductive reachable : GameState -> GameState -> Prop :=
+| reach_refl : forall st, reachable st st
+| reach_step : forall st1 st2 st3,
+    step_reachable st1 st2 ->
+    reachable st2 st3 ->
+    reachable st1 st3.
+
+(* ========================================================================= *)
+(* SECTION 16: TERMINAL CONDITIONS                                          *)
+(* ========================================================================= *)
+
+(* Check if a color has no pieces left *)
+Definition has_no_pieces (b : Board) (c : Color) : bool :=
+  Nat.eqb (count_pieces b c) 0.
+
+(* Check if the side to move has no legal moves *)
+Definition has_no_legal_moves (st : GameState) : bool :=
+  match generate_moves_impl st with
+  | [] => true
+  | _ => false
+  end.
+
+(* Game result *)
+Inductive GameResult :=
+| Win : Color -> GameResult
+| Draw : GameResult.
+
+(* Check if game is terminal and get result *)
+Definition is_terminal (st : GameState) : option GameResult :=
+  if has_no_pieces (board st) (turn st) then
+    Some (Win (opp (turn st)))
+  else if has_no_pieces (board st) (opp (turn st)) then
+    Some (Win (turn st))
+  else if has_no_legal_moves st then
+    Some (Win (opp (turn st)))
+  else
+    None.
+
+(* Check for threefold repetition *)
+Definition count_position_key (key : PositionKey) (book : list PositionKey) : nat :=
+  length (filter (fun k =>
+    match PositionKey with _ => true end
+  ) book).
+
+(* Check if forty-move rule applies *)
+Definition can_claim_forty_move (st : GameState) : bool :=
+  Nat.leb 80 (ply_without_capture_or_man_advance st).
