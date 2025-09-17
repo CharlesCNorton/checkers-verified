@@ -2274,14 +2274,6 @@ Proof.
   exact H.
 Qed.
 
-Lemma sq_index_positive : forall p,
-  (1 <= sq_index p)%nat.
-Proof.
-  intro p.
-  unfold sq_index.
-  simpl.
-  apply Nat.lt_0_succ.
-Qed.
 
 Lemma fin8_to_nat_max : forall f : Fin8,
   (fin8_to_nat f <= 7)%nat.
@@ -2426,31 +2418,234 @@ Proof.
   lia.
 Qed.
 
+(* Helper lemmas for sq_index_bounded *)
+
+(* Switch to nat scope for these lemmas *)
+Local Open Scope nat_scope.
+
+(* Lower bound is trivial *)
+Lemma sq_index_positive : forall p, 1 <= sq_index p.
+Proof.
+  intro p. unfold sq_index. apply Nat.lt_0_succ.
+Qed.
+
+(* Basic arithmetic: even + even = even (mod 2) *)
+Lemma even_plus_even_mod : forall a b,
+  Nat.even a = true -> Nat.even b = true ->
+  (a + b) mod 2 = 0.
+Proof.
+  intros a b Ha Hb.
+  apply Nat.even_spec in Ha.
+  apply Nat.even_spec in Hb.
+  destruct Ha as [k1 Hk1].
+  destruct Hb as [k2 Hk2].
+  rewrite Hk1, Hk2.
+  rewrite <- Nat.mul_add_distr_l.
+  rewrite Nat.mul_comm.
+  apply Nat.mod_mul. auto.
+Qed.
+
+(* Basic arithmetic: odd + odd = even (mod 2) *)
+Lemma odd_plus_odd_mod : forall a b,
+  Nat.odd a = true -> Nat.odd b = true ->
+  (a + b) mod 2 = 0.
+Proof.
+  intros a b Ha Hb.
+  apply Nat.odd_spec in Ha.
+  apply Nat.odd_spec in Hb.
+  destruct Ha as [k1 Hk1].
+  destruct Hb as [k2 Hk2].
+  rewrite Hk1, Hk2.
+  (* (2*k1 + 1) + (2*k2 + 1) = 2*k1 + 2*k2 + 2 = 2*(k1 + k2 + 1) *)
+  assert ((2 * k1 + 1 + (2 * k2 + 1)) mod 2 = ((2 * (k1 + k2 + 1)) mod 2)).
+  {
+    f_equal.
+    ring.
+  }
+  rewrite H.
+  rewrite Nat.mul_comm.
+  apply Nat.mod_mul. auto.
+Qed.
+
+(* Positions are on dark squares *)
+Lemma position_dark_sum_odd : forall p,
+  Nat.odd (fin8_to_nat (rank p) + fin8_to_nat (file p)) = true.
+Proof.
+  intro p.
+  assert (dark (rank p) (file p) = true) by apply position_is_dark.
+  unfold dark in H.
+  exact H.
+Qed.
+
+(* When rank is even, file must be odd for dark squares *)
+Lemma dark_square_even_rank_odd_file : forall p,
+  Nat.even (fin8_to_nat (rank p)) = true ->
+  Nat.odd (fin8_to_nat (file p)) = true.
+Proof.
+  intros p H_rank_even.
+  assert (H_sum_odd: Nat.odd (fin8_to_nat (rank p) + fin8_to_nat (file p)) = true)
+    by apply position_dark_sum_odd.
+  unfold Nat.odd.
+  destruct (Nat.even (fin8_to_nat (file p))) eqn:E_file; [|reflexivity].
+  (* If file is even and rank is even, sum would be even - contradiction *)
+  exfalso.
+  unfold Nat.odd in H_sum_odd.
+  rewrite Nat.even_add in H_sum_odd.
+  rewrite H_rank_even, E_file in H_sum_odd.
+  simpl in H_sum_odd.
+  discriminate.
+Qed.
+
+(* When rank is odd, file must be even for dark squares *)
+Lemma dark_square_odd_rank_even_file : forall p,
+  Nat.even (fin8_to_nat (rank p)) = false ->
+  Nat.even (fin8_to_nat (file p)) = true.
+Proof.
+  intros p H_rank_odd.
+  assert (H_sum_odd: Nat.odd (fin8_to_nat (rank p) + fin8_to_nat (file p)) = true)
+    by apply position_dark_sum_odd.
+  destruct (Nat.even (fin8_to_nat (file p))) eqn:E_file; [reflexivity|].
+  (* If file is odd and rank is odd, sum would be even - contradiction *)
+  exfalso.
+  unfold Nat.odd in H_sum_odd.
+  rewrite Nat.even_add in H_sum_odd.
+  rewrite H_rank_odd, E_file in H_sum_odd.
+  simpl in H_sum_odd.
+  discriminate.
+Qed.
+
+(* Bound for odd file values *)
+Lemma odd_file_div_bound : forall f,
+  (f <= 7)%nat -> Nat.odd f = true -> (f / 2 <= 3)%nat.
+Proof.
+  intros f Hbound Hodd.
+  (* Odd numbers <= 7 are {1,3,5,7} *)
+  (* Their /2 values are {0,1,2,3} *)
+  destruct f as [|[|[|[|[|[|[|[|n]]]]]]]].
+  - (* f = 0 *)
+    unfold Nat.odd in Hodd. simpl in Hodd. discriminate.
+  - (* f = 1 *) simpl. auto.
+  - (* f = 2 *)
+    unfold Nat.odd in Hodd. simpl in Hodd. discriminate.
+  - (* f = 3 *) simpl. auto.
+  - (* f = 4 *)
+    unfold Nat.odd in Hodd. simpl in Hodd. discriminate.
+  - (* f = 5 *) simpl. auto.
+  - (* f = 6 *)
+    unfold Nat.odd in Hodd. simpl in Hodd. discriminate.
+  - (* f = 7 *) simpl. auto.
+  - (* f >= 8 *)
+    exfalso. simpl in Hbound. repeat apply le_S_n in Hbound.
+    apply Nat.nle_succ_0 in Hbound. exact Hbound.
+Qed.
+
+(* Bound for S of even file values *)
+Lemma even_file_S_div_bound : forall f,
+  (f <= 7)%nat -> Nat.even f = true -> (S f / 2 <= 4)%nat.
+Proof.
+  intros f Hbound Heven.
+  (* Even numbers <= 7 are {0,2,4,6} *)
+  (* Their S values /2 are {0,1,2,3} *)
+  destruct f as [|[|[|[|[|[|[|[|n]]]]]]]].
+  - (* f = 0, S 0 / 2 = 0 *) simpl. auto.
+  - (* f = 1 *) simpl in Heven. discriminate.
+  - (* f = 2, S 2 / 2 = 1 *) simpl. auto.
+  - (* f = 3 *) simpl in Heven. discriminate.
+  - (* f = 4, S 4 / 2 = 2 *) simpl. auto.
+  - (* f = 5 *) simpl in Heven. discriminate.
+  - (* f = 6, S 6 / 2 = 3 *) simpl. auto.
+  - (* f = 7 *) simpl in Heven. discriminate.
+  - (* f >= 8 *)
+    exfalso. simpl in Hbound. repeat apply le_S_n in Hbound.
+    apply Nat.nle_succ_0 in Hbound. exact Hbound.
+Qed.
+
+(* Actually, S f / 2 <= 3 for even f <= 7 *)
+Lemma even_file_S_div_bound_tight : forall f,
+  (f <= 7)%nat -> Nat.even f = true -> (S f / 2 <= 3)%nat.
+Proof.
+  intros f Hbound Heven.
+  destruct f as [|[|[|[|[|[|[|[|n]]]]]]]].
+  - (* f = 0, S 0 / 2 = 0 *) simpl. auto.
+  - (* f = 1 *) simpl in Heven. discriminate.
+  - (* f = 2, S 2 / 2 = 1 *) simpl. auto.
+  - (* f = 3 *) simpl in Heven. discriminate.
+  - (* f = 4, S 4 / 2 = 2 *) simpl. auto.
+  - (* f = 5 *) simpl in Heven. discriminate.
+  - (* f = 6, S 6 / 2 = 3 *) simpl. auto.
+  - (* f = 7 *) simpl in Heven. discriminate.
+  - (* f >= 8 *)
+    exfalso. simpl in Hbound. repeat apply le_S_n in Hbound.
+    apply Nat.nle_succ_0 in Hbound. exact Hbound.
+Qed.
+
+(* Offset bound for even rank *)
+Lemma sq_offset_bound_even_rank : forall p,
+  Nat.even (fin8_to_nat (rank p)) = true ->
+  (fin8_to_nat (file p) / 2 <= 3)%nat.
+Proof.
+  intros p H_rank_even.
+  assert (H_file_odd: Nat.odd (fin8_to_nat (file p)) = true)
+    by (apply dark_square_even_rank_odd_file; assumption).
+  assert (H_file_bound: (fin8_to_nat (file p) <= 7)%nat) by apply fin8_to_nat_max.
+  apply odd_file_div_bound; assumption.
+Qed.
+
+(* Offset bound for odd rank *)
+Lemma sq_offset_bound_odd_rank : forall p,
+  Nat.even (fin8_to_nat (rank p)) = false ->
+  (S (fin8_to_nat (file p)) / 2 <= 3)%nat.
+Proof.
+  intros p H_rank_odd.
+  assert (H_file_even: Nat.even (fin8_to_nat (file p)) = true)
+    by (apply dark_square_odd_rank_even_file; assumption).
+  assert (H_file_bound: (fin8_to_nat (file p) <= 7)%nat) by apply fin8_to_nat_max.
+  apply even_file_S_div_bound_tight; assumption.
+Qed.
+
+(* General offset bound *)
+Lemma sq_offset_bound : forall p,
+  ((if Nat.even (fin8_to_nat (rank p))
+    then fin8_to_nat (file p)
+    else S (fin8_to_nat (file p))) / 2 <= 3)%nat.
+Proof.
+  intro p.
+  destruct (Nat.even (fin8_to_nat (rank p))) eqn:E.
+  - apply sq_offset_bound_even_rank; assumption.
+  - apply sq_offset_bound_odd_rank; assumption.
+Qed.
+
+(* Rank contribution bound *)
+Lemma rank_contribution_bound : forall p,
+  (fin8_to_nat (rank p) * 4 <= 28)%nat.
+Proof.
+  intro p.
+  assert (fin8_to_nat (rank p) <= 7)%nat by apply fin8_to_nat_max.
+  lia.
+Qed.
+
+(* Main theorem using helper lemmas *)
 Lemma sq_index_bounded : forall p,
   (1 <= sq_index p <= 32)%nat.
 Proof.
   intro p.
   split.
-  - unfold sq_index. apply Nat.lt_0_succ.
+  - apply sq_index_positive.
   - unfold sq_index.
-    change 32%nat with (S 31%nat).
-    apply le_n_S.
-    assert (H_rank_bound: (fin8_to_nat (rank p) <= 7)%nat) by apply fin8_to_nat_max.
-    assert (H_file_bound: (fin8_to_nat (file p) <= 7)%nat) by apply fin8_to_nat_max.
-    assert (H_rank_mult: (fin8_to_nat (rank p) * 4 <= 28)%nat) by lia.
     assert (H_offset: ((if Nat.even (fin8_to_nat (rank p))
                         then fin8_to_nat (file p)
-                        else S (fin8_to_nat (file p))) / 2 <= 4)%nat).
-    {
-      destruct (Nat.even (fin8_to_nat (rank p))) eqn:E.
-      - remember (fin8_to_nat (file p)) as n eqn:En.
-        assert (n <= 7)%nat by (subst; exact H_file_bound).
-        clear En H_file_bound.
-        destruct n as [|[|[|[|[|[|[|[|]]]]]]]]; simpl; lia.
-      - remember (fin8_to_nat (file p)) as n eqn:En.
-        assert (n <= 7)%nat by (subst; exact H_file_bound).
-        clear En H_file_bound.
-        destruct n as [|[|[|[|[|[|[|[|]]]]]]]]; simpl; lia.
-    }
-    lia.
+                        else S (fin8_to_nat (file p))) / 2 <= 3)%nat)
+      by apply sq_offset_bound.
+    assert (H_rank: (fin8_to_nat (rank p) * 4 <= 28)%nat)
+      by apply rank_contribution_bound.
+    (* S (r * 4 + offset) <= S (28 + 3) = S 31 = 32 *)
+    assert (fin8_to_nat (rank p) * 4 +
+            (if Nat.even (fin8_to_nat (rank p))
+             then fin8_to_nat (file p)
+             else S (fin8_to_nat (file p))) / 2 <= 31).
+    { transitivity (28 + 3).
+      - apply Nat.add_le_mono; assumption.
+      - simpl. constructor. }
+    auto with arith.
 Qed.
+        
