@@ -1719,9 +1719,219 @@ Definition is_terminal (st : GameState) : option GameResult :=
 (* Check for threefold repetition *)
 Definition count_position_key (key : PositionKey) (book : list PositionKey) : nat :=
   length (filter (fun k =>
-    match PositionKey with _ => true end
+    (* Need to compare boards and colors *)
+    match key, k with
+    | (b1, c1), (b2, c2) =>
+      andb (if Color_eq_dec c1 c2 then true else false)
+           (if forallb (fun p =>
+                 match board_get b1 p, board_get b2 p with
+                 | None, None => true
+                 | Some pc1, Some pc2 =>
+                   andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
+                        (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
+                 | _, _ => false
+                 end
+               ) enum_pos then true else false)
+    end
   ) book).
 
 (* Check if forty-move rule applies *)
 Definition can_claim_forty_move (st : GameState) : bool :=
   Nat.leb 80 (ply_without_capture_or_man_advance st).
+
+(* Check for threefold repetition *)
+Definition can_claim_threefold (st : GameState) : bool :=
+  Nat.leb 3 (count_position_key (key_of_state st) (repetition_book st)).
+
+(* Validation for Section 16 *)
+Example immobilization_loses : forall st,
+  WFState st ->
+  has_no_legal_moves st = true ->
+  has_no_pieces (board st) (turn st) = false ->
+  has_no_pieces (board st) (opp (turn st)) = false ->
+  is_terminal st = Some (Win (opp (turn st))).
+Proof.
+  intros st Hwf Hno_moves Hhas_pieces Hopp_has_pieces.
+  unfold is_terminal.
+  rewrite Hhas_pieces, Hopp_has_pieces, Hno_moves.
+  reflexivity.
+Qed.
+
+(* ========================================================================= *)
+(* SECTION 17: OPTIONAL/HISTORICAL RULES                                    *)
+(* ========================================================================= *)
+
+(* Huffing (deprecated): modeled as illegal-move correction outside core state *)
+(* We don't implement actual huffing since it's deprecated in modern play *)
+
+(* Three-move ballot openings *)
+Inductive Opening :=
+| Opening11_15 : Opening  (* 11-15 *)
+| Opening12_16 : Opening  (* 12-16 *)
+| Opening9_13 : Opening   (* 9-13 *)
+| Opening9_14 : Opening   (* 9-14 *)
+| Opening10_14 : Opening  (* 10-14 *)
+| Opening10_15 : Opening  (* 10-15 *)
+| Opening11_16 : Opening  (* 11-16 *).
+
+(* Helper: get position from square number (1-32) *)
+(* For simplicity, we'll use a direct mapping *)
+Definition get_position_from_number (n : nat) : option Position :=
+  if andb (Nat.leb 1 n) (Nat.leb n 32) then
+    (* Find the position with the matching sq_index *)
+    find (fun p => Nat.eqb (sq_index p) n) enum_pos
+  else
+    None.
+
+(* Apply opening ballot *)
+Definition apply_opening_move (st : GameState) (from_sq to_sq : nat) : option GameState :=
+  match get_position_from_number from_sq, get_position_from_number to_sq with
+  | Some from, Some to =>
+    let m := Step from to in
+    if legal_move_impl st m then
+      apply_move_impl st m
+    else
+      None
+  | _, _ => None
+  end.
+
+(* Apply a three-move opening ballot *)
+Definition apply_opening_ballot (st : GameState) (op : Opening) : option GameState :=
+  match op with
+  | Opening11_15 =>
+    (* Dark: 11-15, Light: 23-19, Dark: 8-11 *)
+    match apply_opening_move st 11 15 with
+    | Some st1 => match apply_opening_move st1 23 19 with
+                  | Some st2 => apply_opening_move st2 8 11
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening12_16 =>
+    (* Dark: 12-16, Light: 24-20, Dark: 8-12 *)
+    match apply_opening_move st 12 16 with
+    | Some st1 => match apply_opening_move st1 24 20 with
+                  | Some st2 => apply_opening_move st2 8 12
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening9_13 =>
+    (* Dark: 9-13, Light: 22-18, Dark: 5-9 *)
+    match apply_opening_move st 9 13 with
+    | Some st1 => match apply_opening_move st1 22 18 with
+                  | Some st2 => apply_opening_move st2 5 9
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening9_14 =>
+    (* Dark: 9-14, Light: 22-17, Dark: 5-9 *)
+    match apply_opening_move st 9 14 with
+    | Some st1 => match apply_opening_move st1 22 17 with
+                  | Some st2 => apply_opening_move st2 5 9
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening10_14 =>
+    (* Dark: 10-14, Light: 22-17, Dark: 6-10 *)
+    match apply_opening_move st 10 14 with
+    | Some st1 => match apply_opening_move st1 22 17 with
+                  | Some st2 => apply_opening_move st2 6 10
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening10_15 =>
+    (* Dark: 10-15, Light: 22-18, Dark: 15-22 (capture!) *)
+    match apply_opening_move st 10 15 with
+    | Some st1 => match apply_opening_move st1 22 18 with
+                  | Some st2 =>
+                    (* This is actually a capture: 15x22 *)
+                    match get_position_from_number 15, get_position_from_number 18,
+                          get_position_from_number 22 with
+                    | Some from, Some over, Some to =>
+                      let link := existT (fun _ => Position) over to in
+                      apply_move_impl st2 (Jump from [link])
+                    | _, _, _ => None
+                    end
+                  | None => None
+                  end
+    | None => None
+    end
+  | Opening11_16 =>
+    (* Dark: 11-16, Light: 24-20, Dark: 8-11 *)
+    match apply_opening_move st 11 16 with
+    | Some st1 => match apply_opening_move st1 24 20 with
+                  | Some st2 => apply_opening_move st2 8 11
+                  | None => None
+                  end
+    | None => None
+    end
+  end.
+
+(* Helper lemma 1: filter length is bounded by list length *)
+Lemma filter_length_le : forall A (f : A -> bool) (l : list A),
+  (length (filter f l) <= length l)%nat.
+Proof.
+  intros A f l.
+  induction l.
+  - simpl. auto.
+  - simpl. destruct (f a).
+    + simpl. apply le_n_S. exact IHl.
+    + apply Nat.le_trans with (length l).
+      * exact IHl.
+      * apply le_S. apply le_n.
+Qed.
+
+(* Helper lemma 2: count_pieces is bounded by enum_pos length *)
+Lemma count_pieces_bounded : forall b c,
+  (count_pieces b c <= 32)%nat.
+Proof.
+  intros b c.
+  unfold count_pieces.
+  apply Nat.le_trans with (length enum_pos).
+  - apply filter_length_le.
+  - rewrite enum_pos_length.
+    reflexivity.
+Qed.
+
+(* Helper lemma 3: filter preserves equality when functions agree *)
+Lemma filter_ext : forall A (f g : A -> bool) (l : list A),
+  (forall x, In x l -> f x = g x) ->
+  filter f l = filter g l.
+Proof.
+  intros A f g l H.
+  induction l.
+  - reflexivity.
+  - simpl.
+    assert (f a = g a) by (apply H; left; reflexivity).
+    rewrite H0.
+    destruct (g a).
+    + f_equal. apply IHl. intros. apply H. right. assumption.
+    + apply IHl. intros. apply H. right. assumption.
+Qed.
+
+(* Helper lemma 4: board_set at position p changes only position p *)
+Lemma board_set_get_same : forall b p pc,
+  board_get (board_set b p pc) p = pc.
+Proof.
+  intros b p pc.
+  unfold board_set, board_get.
+  destruct (equiv_dec p p) as [|Hneq].
+  - reflexivity.
+  - exfalso. apply Hneq. reflexivity.
+Qed.
+
+(* Helper lemma 5: board_set at position p doesn't affect other positions *)
+Lemma board_set_get_other : forall b p p' pc,
+  p <> p' ->
+  board_get (board_set b p pc) p' = board_get b p'.
+Proof.
+  intros b p p' pc H.
+  unfold board_set, board_get.
+  destruct (equiv_dec p p').
+  - unfold equiv in e. simpl in e. contradiction.
+  - reflexivity.
+Qed.
