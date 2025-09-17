@@ -18,7 +18,7 @@ Require Import Coq.MSets.MSetList.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Arith.EqNat.
-Require Import Coq.micromega.Lia.  (* Replaced omega with lia *)
+Require Import Coq.micromega.Lia.
 Require Import Coq.Classes.EquivDec.
 Require Import Coq.Classes.SetoidClass.
 Require Import Coq.Relations.Relations.
