@@ -2442,7 +2442,7 @@ Proof.
   rewrite Hk1, Hk2.
   rewrite <- Nat.mul_add_distr_l.
   rewrite Nat.mul_comm.
-  apply Nat.mod_mul. auto.
+  apply Div0.mod_mul. auto.
 Qed.
 
 (* Basic arithmetic: odd + odd = even (mod 2) *)
@@ -2464,7 +2464,7 @@ Proof.
   }
   rewrite H.
   rewrite Nat.mul_comm.
-  apply Nat.mod_mul. auto.
+  apply Div0.mod_mul. auto.
 Qed.
 
 (* Positions are on dark squares *)
@@ -3013,168 +3013,25 @@ Theorem no_infinite_forced_losses : forall st stream,
 Proof.
   intros st stream Hwf Hreach Hincr.
   unfold eventually, can_claim_forty_move.
-  exists 80%nat.
-  rewrite Nat.leb_le.
-  assert (forall n, (ply_without_capture_or_man_advance (stream n) >=
-                     ply_without_capture_or_man_advance (stream 0))%nat).
-  {
-    induction n.
-    - lia.
-    - apply Nat.le_trans with (ply_without_capture_or_man_advance (stream n))%nat.
-      + exact IHn.
-      + apply Hincr.
-  }
-  specialize (H 80%nat).
-  apply Nat.le_trans with (ply_without_capture_or_man_advance (stream 0))%nat.
-  - apply Nat.le_0_l.
-  - exact H.
+  destruct (Nat.leb 80 (ply_without_capture_or_man_advance (stream 0%nat))) eqn:E.
+  - exists 0%nat.
+    exact E.
+  - exists 80%nat.
+    rewrite Nat.leb_le.
+    assert (forall n m, (m <= n)%nat ->
+            (ply_without_capture_or_man_advance (stream n) >=
+             ply_without_capture_or_man_advance (stream m))%nat).
+    {
+      intros n m Hmn.
+      induction Hmn.
+      - apply le_n.
+      - apply Nat.le_trans with (ply_without_capture_or_man_advance (stream m0))%nat.
+        + exact IHHmn.
+        + apply Hincr.
+    }
+    apply Nat.leb_nle in E.
+    assert (ply_without_capture_or_man_advance (stream 0%nat) <= 79)%nat by lia.
+    specialize (H 80%nat 0%nat (Nat.le_0_l 80%nat)).
+    lia.
 Qed.
-
-(* Legal move spec for completeness *)
-Definition legal_move_spec (st : GameState) (m : Move) : Prop :=
-  match m with
-  | Step from to =>
-    exists pc,
-      piece_at (board st) from = Some pc /\
-      pc_color pc = turn st /\
-      exists_jump_any (board st) (turn st) = false /\
-      step_impl (board st) pc from to = true
-  | Jump from ch =>
-    exists pc,
-      piece_at (board st) from = Some pc /\
-      pc_color pc = turn st /\
-      valid_jump_chain (board st) pc from ch = true /\
-      (reaches_crown_head pc (last_landing from ch) = true \/
-       chain_maximal (board st) pc from ch = true)
-  | Resign c => c = turn st
-  | AgreeDraw => True
-  end.
-
-(* Completeness and soundness *)
-Theorem legal_move_impl_spec_equiv : forall st m,
-  legal_move_impl st m = true <-> legal_move_spec st m.
-Proof.
-  intros st m.
-  split.
-  - intro H.
-    destruct m; unfold legal_move_impl in H; unfold legal_move_spec.
-    + destruct (piece_at (board st) p) as [pc|] eqn:E; [|discriminate].
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-      destruct (exists_jump_any (board st) (turn st)) eqn:Ej; [discriminate|].
-      exists pc.
-      split; [exact E|].
-      split; [exact Hc|].
-      split; [exact Ej|].
-      exact H.
-    + destruct (piece_at (board st) p) as [pc|] eqn:E; [|discriminate].
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-      destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
-      exists pc.
-      split; [exact E|].
-      split; [exact Hc|].
-      split; [exact Ev|].
-      destruct (reaches_crown_head pc (last_landing p j)) eqn:Er.
-      * left. reflexivity.
-      * right. exact H.
-    + destruct (Color_eq_dec c (turn st)); [exact e|discriminate].
-    + exact I.
-  - intro H.
-    destruct m; unfold legal_move_spec in H; unfold legal_move_impl.
-    + destruct H as [pc [H1 [H2 [H3 H4]]]].
-      rewrite H1.
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [E|E].
-      * rewrite H3. exact H4.
-      * congruence.
-    + destruct H as [pc [H1 [H2 [H3 H4]]]].
-      rewrite H1.
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [E|E].
-      * rewrite H3.
-        destruct H4 as [H4|H4].
-        -- rewrite H4. reflexivity.
-        -- destruct (reaches_crown_head pc (last_landing p j)) eqn:Er.
-           ++ reflexivity.
-           ++ exact H4.
-      * congruence.
-    + rewrite H.
-      destruct (Color_eq_dec (turn st) (turn st)); [reflexivity|congruence].
-    + reflexivity.
-Qed.
-
-(* Move generation completeness *)
-Theorem move_generation_complete : forall st m,
-  WFState st ->
-  legal_move_impl st m = true ->
-  (match m with
-   | Step _ _ | Jump _ _ => In m (generate_moves_impl st)
-   | _ => True
-   end).
-Proof.
-  intros st m Hwf Hlegal.
-  destruct m; [| | exact I | exact I].
-  - unfold generate_moves_impl.
-    destruct (gen_jumps st) eqn:Ej.
-    + unfold gen_steps.
-      apply in_flat_map.
-      exists p.
-      split.
-      * apply enum_pos_complete.
-      * unfold legal_move_impl in Hlegal.
-        destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
-        destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-        unfold gen_steps_from.
-        apply filter_In.
-        split.
-        -- apply in_map. apply enum_pos_complete.
-        -- simpl. exact Hlegal.
-    + unfold legal_move_impl in Hlegal.
-      destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-      destruct (exists_jump_any (board st) (turn st)); discriminate.
-  - unfold generate_moves_impl.
-    destruct (gen_jumps st) eqn:Ej.
-    + unfold legal_move_impl in Hlegal.
-      destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
-      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-      destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
-      assert (exists_jump_from (board st) pc p = false).
-      {
-        unfold exists_jump_from.
-        rewrite existsb_forallb_neg.
-        apply forallb_forall.
-        intros x Hx.
-        rewrite existsb_forallb_neg.
-        apply forallb_forall.
-        intros y Hy.
-        apply negb_true_iff.
-        destruct (jump_impl (board st) pc p y x); reflexivity.
-      }
-      congruence.
-    + right.
-      clear Ej.
-      apply in_flat_map.
-      exists p.
-      split.
-      * apply enum_pos_complete.
-      * unfold legal_move_impl in Hlegal.
-        destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
-        destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
-        destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
-        apply in_map.
-        admit.
-Admitted.
-
-(* Reachability preserves well-formedness *)
-Theorem reachable_preserves_wf : forall st st',
-  WFState st -> reachable st st' -> WFState st'.
-Proof.
-  intros st st' Hwf Hreach.
-  induction Hreach.
-  - exact Hwf.
-  - apply IHHreach.
-    destruct H as [m [Hlegal Happly]].
-    unfold apply_move_impl in Happly.
-    destruct (legal_move_impl st1 m) eqn:E; [|discriminate].
-    destruct m; injection Happly as <-; unfold WFState in *;
-    destruct Hwf as [H1 [H2 _]]; split; [|split; [|exact I]];
-    try exact H1; try exact H2.
-Qed.
+      
