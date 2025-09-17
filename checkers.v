@@ -2415,4 +2415,42 @@ Example parse_print_draw : forall st,
 Proof.
   intro st. simpl. reflexivity.
 Qed.
-       
+
+(* Lemma: parse_nat correctly inverts nat_to_string for numbers 1-32 *)
+Lemma parse_nat_nat_to_string_inverse : forall n,
+  (1 <= n <= 32)%nat ->
+  parse_nat (nat_to_string n) = Some n.
+Proof.
+  intros n H.
+  apply nat_to_string_parse_nat_small.
+  lia.
+Qed.
+
+Lemma sq_index_bounded : forall p,
+  (1 <= sq_index p <= 32)%nat.
+Proof.
+  intro p.
+  split.
+  - unfold sq_index. apply Nat.lt_0_succ.
+  - unfold sq_index.
+    change 32%nat with (S 31%nat).
+    apply le_n_S.
+    assert (H_rank_bound: (fin8_to_nat (rank p) <= 7)%nat) by apply fin8_to_nat_max.
+    assert (H_file_bound: (fin8_to_nat (file p) <= 7)%nat) by apply fin8_to_nat_max.
+    assert (H_rank_mult: (fin8_to_nat (rank p) * 4 <= 28)%nat) by lia.
+    assert (H_offset: ((if Nat.even (fin8_to_nat (rank p))
+                        then fin8_to_nat (file p)
+                        else S (fin8_to_nat (file p))) / 2 <= 4)%nat).
+    {
+      destruct (Nat.even (fin8_to_nat (rank p))) eqn:E.
+      - remember (fin8_to_nat (file p)) as n eqn:En.
+        assert (n <= 7)%nat by (subst; exact H_file_bound).
+        clear En H_file_bound.
+        destruct n as [|[|[|[|[|[|[|[|]]]]]]]]; simpl; lia.
+      - remember (fin8_to_nat (file p)) as n eqn:En.
+        assert (n <= 7)%nat by (subst; exact H_file_bound).
+        clear En H_file_bound.
+        destruct n as [|[|[|[|[|[|[|[|]]]]]]]]; simpl; lia.
+    }
+    lia.
+Qed.
