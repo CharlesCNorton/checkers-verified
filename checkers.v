@@ -1370,3 +1370,86 @@ Example jump_last_landing_defined : forall from ch b,
 Proof.
   intros. reflexivity.
 Qed.
+
+(* ========================================================================= *)
+(* SECTION 12: MOVE LEGALITY                                                *)
+(* ========================================================================= *)
+
+(* Helper: get piece at position *)
+Definition piece_at (b : Board) (p : Position) : option Piece :=
+  board_get b p.
+
+(* Helper: check if piece is a man *)
+Definition is_man (pc : option Piece) : bool :=
+  match pc with
+  | Some p => match pc_kind p with Man => true | King => false end
+  | None => false
+  end.
+
+(* Main move legality implementation *)
+Definition legal_move_impl (st : GameState) (m : Move) : bool :=
+  match m with
+  | Step from to =>
+    (* Check source occupancy by side to move *)
+    match piece_at (board st) from with
+    | Some pc =>
+      if Color_eq_dec (pc_color pc) (turn st) then
+        (* Check forcing - no steps if captures exist *)
+        if exists_jump_any (board st) (turn st) then
+          false
+        else
+          step_impl (board st) pc from to
+      else false
+    | None => false
+    end
+  | Jump from ch =>
+    (* Check source occupancy by side to move *)
+    match piece_at (board st) from with
+    | Some pc =>
+      if Color_eq_dec (pc_color pc) (turn st) then
+        (* Check chain validity *)
+        if valid_jump_chain (board st) pc from ch then
+          (* Check maximality unless promotion *)
+          let last_pos := last_landing from ch in
+          if reaches_crown_head pc last_pos then
+            true  (* Promotion ends chain *)
+          else
+            chain_maximal (board st) pc from ch
+        else false
+      else false
+    | None => false
+    end
+  | Resign c =>
+    (* Can only resign on your turn *)
+    if Color_eq_dec c (turn st) then true else false
+  | AgreeDraw =>
+    (* Draw offers are always technically legal *)
+    true
+  end.
+
+(* Simplified validation for Section 12 *)
+Example legal_move_respects_turn : forall st m,
+  legal_move_impl st m = true ->
+  match m with
+  | Step from _ | Jump from _ =>
+    match piece_at (board st) from with
+    | Some pc => pc_color pc = turn st
+    | None => False
+    end
+  | Resign c => c = turn st
+  | AgreeDraw => True
+  end.
+Proof.
+  intros st m H.
+  destruct m; simpl in H.
+  - (* Step *)
+    destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+    destruct (Color_eq_dec (pc_color pc) (turn st)) as [e|n]; [exact e|discriminate].
+  - (* Jump *)
+    destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+    destruct (Color_eq_dec (pc_color pc) (turn st)) as [e|n]; [exact e|discriminate].
+  - (* Resign *)
+    destruct (Color_eq_dec c (turn st)) as [e|n]; [exact e|discriminate].
+  - (* AgreeDraw *)
+    exact I.
+Qed.
