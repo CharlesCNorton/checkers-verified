@@ -1253,12 +1253,78 @@ Qed.
 (* Position key for repetition detection *)
 Definition PositionKey := (Board * Color)%type.
 
+(* Multiset implementation for PositionKey *)
+Module PositionMultiset.
+  Definition t := PositionKey -> nat.
+
+  Definition empty : t := fun _ => 0%nat.
+
+  (* Helper: compare two PositionKeys for equality *)
+  Definition position_key_eqb (k1 k2 : PositionKey) : bool :=
+    match k1, k2 with
+    | (b1, c1), (b2, c2) =>
+      andb (if Color_eq_dec c1 c2 then true else false)
+           (forallb (fun p =>
+             match board_get b1 p, board_get b2 p with
+             | None, None => true
+             | Some pc1, Some pc2 =>
+               andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
+                    (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
+             | _, _ => false
+             end
+           ) enum_pos)
+    end.
+
+  Definition add (key : PositionKey) (m : t) : t :=
+    fun k => if position_key_eqb key k then S (m k) else m k.
+
+  Definition multiplicity (key : PositionKey) (m : t) : nat := m key.
+
+  Lemma position_key_eqb_refl : forall k, position_key_eqb k k = true.
+  Proof.
+    intros [b c].
+    unfold position_key_eqb.
+    destruct (Color_eq_dec c c) as [Hc|Hc].
+    - simpl.
+      assert (H: forallb (fun p : Position =>
+                   match board_get b p, board_get b p with
+                   | Some pc1, Some pc2 =>
+                       andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
+                            (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
+                   | None, None => true
+                   | _, _ => false
+                   end) enum_pos = true).
+      {
+        rewrite forallb_forall.
+        intros p Hp.
+        destruct (board_get b p) as [pc|] eqn:E.
+        - destruct (Color_eq_dec (pc_color pc) (pc_color pc)) as [_|n].
+          + destruct (PieceKind_eq_dec (pc_kind pc) (pc_kind pc)) as [_|n].
+            * reflexivity.
+            * contradiction n; reflexivity.
+          + contradiction n; reflexivity.
+        - reflexivity.
+      }
+      exact H.
+    - contradiction Hc; reflexivity.
+  Qed.
+
+  Lemma add_spec_same : forall k m,
+    multiplicity k (add k m) = S (multiplicity k m).
+  Proof.
+    intros k m.
+    unfold multiplicity, add.
+    rewrite position_key_eqb_refl.
+    reflexivity.
+  Qed.
+End PositionMultiset.
+
 (* Game state record *)
 Record GameState := mkGameState {
   board : Board;
   turn : Color;
   ply_without_capture_or_man_advance : nat;
-  repetition_book : list PositionKey  (* Simple list for tracking positions *)
+  repetition_book : PositionMultiset.t  (* Multiset for tracking positions *)
 }.
 
 (* Generate key from state *)
@@ -1285,7 +1351,7 @@ Definition WFState (st : GameState) : Prop :=
 
 (* Initial game state *)
 Definition initial_state : GameState :=
-  mkGameState initial_board Dark 0 [].
+  mkGameState initial_board Dark 0 PositionMultiset.empty.
 
 (* Helper: count initial pieces *)
 Lemma initial_dark_count : count_pieces initial_board Dark = 12%nat.
@@ -1514,7 +1580,7 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         new_board
         (opp (turn st))
         new_ply
-        (new_key :: repetition_book st))
+        (PositionMultiset.add new_key (repetition_book st)))
     | Jump from ch =>
       let new_board := apply_jump (board st) from ch in
       let new_key := (new_board, opp (turn st)) in
@@ -1522,7 +1588,7 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         new_board
         (opp (turn st))
         0%nat  (* Reset counter on capture *)
-        (new_key :: repetition_book st))
+        (PositionMultiset.add new_key (repetition_book st)))
     | Resign c =>
       (* Resignation is a valid move that ends the game *)
       (* The resigning player's opponent wins *)
@@ -1709,23 +1775,8 @@ Definition is_terminal (st : GameState) : option GameResult :=
     None.
 
 (* Check for threefold repetition *)
-Definition count_position_key (key : PositionKey) (book : list PositionKey) : nat :=
-  List.length (filter (fun k =>
-    (* Need to compare boards and colors *)
-    match key, k with
-    | (b1, c1), (b2, c2) =>
-      andb (if Color_eq_dec c1 c2 then true else false)
-           (if forallb (fun p =>
-                 match board_get b1 p, board_get b2 p with
-                 | None, None => true
-                 | Some pc1, Some pc2 =>
-                   andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
-                        (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
-                 | _, _ => false
-                 end
-               ) enum_pos then true else false)
-    end
-  ) book).
+Definition count_position_key (key : PositionKey) (book : PositionMultiset.t) : nat :=
+  PositionMultiset.multiplicity key book.
 
 (* Check if forty-move rule applies *)
 Definition can_claim_forty_move (st : GameState) : bool :=
@@ -2284,4 +2335,3 @@ Proof.
   vm_compute.
   reflexivity.
 Qed.
-                        
