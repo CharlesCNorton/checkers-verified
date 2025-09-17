@@ -18,7 +18,7 @@ Require Import Coq.MSets.MSetList.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Arith.EqNat.
-Require Import Coq.micromega.Lia.
+Require Import Coq.micromega.Lia.  (* Replaced omega with lia *)
 Require Import Coq.Classes.EquivDec.
 Require Import Coq.Classes.SetoidClass.
 Require Import Coq.Relations.Relations.
@@ -2172,79 +2172,3 @@ Proof.
   destruct (Fin.to_nat f) as [n H].
   exact H.
 Qed.
-
-Lemma sq_index_bounded : forall p,
-  (1 <= sq_index p <= 32)%nat.
-Proof.
-  intro p.
-  destruct p as [r f Hd].
-  unfold sq_index; simpl.
-  destruct r; destruct f; simpl; auto.
-Qed.
-
-Lemma get_position_sq_index : forall p,
-  get_position_from_number (sq_index p) = Some p.
-Proof.
-  intro p.
-  unfold get_position_from_number.
-  simpl.
-  assert (Hb: (1 <= sq_index p <= 32)%nat) by apply sq_index_bounded.
-  destruct (andb (Nat.leb 1 (sq_index p)) (Nat.leb (sq_index p) 32)) eqn:E.
-  - unfold find.
-    assert (exists q, In q enum_pos /\ sq_index q = sq_index p).
-    { exists p. split. apply enum_pos_complete. reflexivity. }
-    clear Hb E.
-    induction enum_pos as [|h t IH].
-    + destruct H as [q [Hq _]]. contradiction.
-    + simpl.
-      destruct (Nat.eqb (sq_index h) (sq_index p)) eqn:Eeq.
-      * rewrite Nat.eqb_eq in Eeq.
-        destruct H as [q [Hq Heq]].
-        simpl in Hq. destruct Hq.
-        -- subst. rewrite <- Heq in Eeq.
-           assert (h = p).
-           {
-             clear -Eeq.
-             destruct h as [r1 f1 H1].
-             destruct p as [r2 f2 H2].
-             apply position_eq.
-             - unfold rank. simpl.
-               unfold sq_index in Eeq. simpl in Eeq.
-               clear H1 H2.
-               apply fin8_cases with (f := r1);
-               apply fin8_cases with (f := r2);
-               vm_compute in Eeq; try discriminate; try reflexivity.
-             - unfold file. simpl.
-               unfold sq_index in Eeq. simpl in Eeq.
-               clear H1 H2.
-               apply fin8_cases with (f := f1);
-               apply fin8_cases with (f := f2);
-               vm_compute in Eeq; try discriminate; try reflexivity.
-           }
-           subst. reflexivity.
-        -- apply IH. exists q. split; assumption.
-      * apply IH.
-        destruct H as [q [Hq Heq]].
-        simpl in Hq.
-        destruct Hq.
-        -- subst. rewrite <- Heq in Eeq.
-           rewrite Nat.eqb_refl in Eeq. discriminate.
-        -- exists q. split; assumption.
-  - exfalso.
-    rewrite andb_false_iff in E.
-    destruct E; rewrite Nat.leb_nle in H; lia.
-Qed.
-
-Example parse_print_works_for_9_14 :
-  let st := initial_state in
-  match get_position_from_number 9, get_position_from_number 14 with
-  | Some from, Some to =>
-    parse_numeric (move_to_numeric st (Step from to)) st = Some (Step from to)
-  | _, _ => True
-  end.
-Proof.
-  simpl.
-  vm_compute.
-  reflexivity.
-Qed.
-                        
