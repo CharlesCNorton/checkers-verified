@@ -2648,4 +2648,37 @@ Proof.
       - simpl. constructor. }
     auto with arith.
 Qed.
-        
+
+(* Validation example: verify that the bounds lemma works correctly *)
+Example sq_index_bounds_validation :
+  forall p : Position, 1 <= sq_index p <= 32.
+Proof.
+  intro p.
+  apply sq_index_bounded.
+Qed.
+
+(* Verify specific corner positions *)
+Example corner_positions_valid :
+  (* We can construct positions and verify their indices are in bounds *)
+  forall r f (H : dark r f = true),
+  let p := mkPosition r f H in
+  1 <= sq_index p <= 32.
+Proof.
+  intros r f H p.
+  apply sq_index_bounded.
+Qed.
+
+(* Example showing the lemma works for any valid position *)
+Example position_index_range :
+  forall p,
+  exists n, sq_index p = n /\ 1 <= n <= 32.
+Proof.
+  intro p.
+  exists (sq_index p).
+  split.
+  - reflexivity.
+  - apply sq_index_bounded.
+Qed.
+
+(* Switch back to Z scope for the rest of the file *)
+Local Open Scope Z_scope.
