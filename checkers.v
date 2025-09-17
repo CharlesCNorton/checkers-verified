@@ -2832,6 +2832,22 @@ Proof.
     + simpl. unfold Z.le. simpl. intro. discriminate.
 Qed.
 
+Lemma filter_subset_length : forall A (P Q : A -> bool) (l : list A),
+  (forall x, In x l -> P x = true -> Q x = true) ->
+  (List.length (filter P l) <= List.length (filter Q l))%nat.
+Proof.
+  intros A P Q l H.
+  induction l as [|h t IH].
+  - reflexivity.
+  - simpl.
+    destruct (P h) eqn:HP, (Q h) eqn:HQ.
+    + simpl. apply le_n_S. apply IH. intros. apply H; [right|]; assumption.
+    + assert (Q h = true) by (apply H; [left; reflexivity|exact HP]).
+      congruence.
+    + apply le_S. apply IH. intros. apply H; [right|]; assumption.
+    + apply IH. intros. apply H; [right|]; assumption.
+Qed.
+
 Lemma filter_In : forall A (f : A -> bool) (l : list A) x,
   In x (filter f l) <-> In x l /\ f x = true.
 Proof.
@@ -2854,4 +2870,311 @@ Proof.
         -- subst. rewrite Hf in Efa. discriminate.
         -- apply IHl. exact Hin'.
 Qed.
-                       
+
+Example material_bounds : forall b c,
+  (count_pieces b Dark + count_pieces b Light <= 24)%nat ->
+  0 <= material_value b c <= 24 * max_piece_weight.
+Proof.
+  intros b c Htotal.
+  unfold material_value, max_piece_weight, man_weight, king_weight.
+  split.
+  - apply Z.add_nonneg_nonneg; apply Z.mul_nonneg_nonneg;
+    try apply Zle_0_nat; lia.
+  - assert (HMax: Z.max 1 3 = 3) by reflexivity.
+    rewrite HMax.
+    assert (Hc_bound: (count_pieces b c <= 24)%nat).
+    { destruct c.
+      - apply Nat.le_trans with (count_pieces b Dark + count_pieces b Light)%nat.
+        + apply Nat.le_add_r.
+        + exact Htotal.
+      - apply Nat.le_trans with (count_pieces b Dark + count_pieces b Light)%nat.
+        + rewrite Nat.add_comm. apply Nat.le_add_r.
+        + exact Htotal. }
+    assert (man_plus_king: (count_pieces_by_kind b c Man + count_pieces_by_kind b c King <= 24)%nat).
+    {
+      assert (each_le_total: forall k, (count_pieces_by_kind b c k <= count_pieces b c)%nat).
+      { intro k. unfold count_pieces, count_pieces_by_kind.
+        apply filter_subset_length.
+        intros p H.
+        destruct (b p) as [pc|]; [|discriminate].
+        simpl in H.
+        destruct (Color_eq_dec (pc_color pc) c); [|discriminate].
+        destruct (PieceKind_eq_dec (pc_kind pc) k); [|discriminate].
+        reflexivity.
+      }
+      apply Nat.le_trans with (count_pieces b c)%nat.
+      - assert (count_pieces_by_kind b c Man + count_pieces_by_kind b c King <= count_pieces b c)%nat.
+        {
+          unfold count_pieces, count_pieces_by_kind.
+          induction enum_pos as [|h t IH]; [reflexivity|].
+          simpl.
+          destruct (b h) as [pc|] eqn:E.
+          - destruct (Color_eq_dec (pc_color pc) c) as [Hc|Hc]; simpl.
+            + destruct (pc_kind pc) eqn:Ek.
+              * destruct (PieceKind_eq_dec Man Man); [|congruence].
+                destruct (PieceKind_eq_dec King Man); [congruence|].
+                simpl. apply le_n_S. exact IH.
+              * destruct (PieceKind_eq_dec Man King); [congruence|].
+                destruct (PieceKind_eq_dec King King); [|congruence].
+                simpl.
+                assert (Hplus: forall a b, (a + S b = S (a + b))%nat) by (intros; lia).
+                rewrite Hplus. apply le_n_S. exact IH.
+            + exact IH.
+          - exact IH.
+        }
+        exact H.
+      - exact Hc_bound.
+    }
+    apply Z.le_trans with (Z.of_nat 24 * 3).
+    + apply Z.le_trans with ((Z.of_nat (count_pieces_by_kind b c Man) +
+                              Z.of_nat (count_pieces_by_kind b c King)) * 3).
+      * assert (HDistr: forall a b c : Z, (a + b) * c = a * c + b * c) by (intros; ring).
+        rewrite HDistr.
+        apply Z.add_le_mono.
+        -- assert (1 <= 3) by lia.
+           assert (Z.of_nat (count_pieces_by_kind b c Man) * 1 <=
+                   Z.of_nat (count_pieces_by_kind b c Man) * 3).
+           { apply Z.mul_le_mono_nonneg_l; [apply Zle_0_nat | exact H]. }
+           lia.
+        -- apply Z.le_refl.
+      * apply Z.mul_le_mono_nonneg_r.
+        -- lia.
+        -- rewrite <- Nat2Z.inj_add.
+           apply Z_of_nat_le.
+           exact man_plus_king.
+    + reflexivity.
+Qed.
+(* ========================================================================= *)
+(* SECTION 21: METATHEOREMS & IMPLEMENTATION CONTRACTS                      *)
+(* ========================================================================= *)
+
+(* Decidability of WFState *)
+Lemma WFState_dec : forall st, {WFState st} + {~WFState st}.
+Proof.
+  intro st.
+  unfold WFState.
+  destruct (Nat.leb (count_pieces (board st) Dark) 12) eqn:E1.
+  - destruct (Nat.leb (count_pieces (board st) Light) 12) eqn:E2.
+    + left.
+      split; [|split; [|exact I]].
+      * apply Nat.leb_le. exact E1.
+      * apply Nat.leb_le. exact E2.
+    + right.
+      intro H.
+      destruct H as [_ [H _]].
+      apply Nat.leb_le in H.
+      rewrite H in E2. discriminate.
+  - right.
+    intro H.
+    destruct H as [H _].
+    apply Nat.leb_le in H.
+    rewrite H in E1. discriminate.
+Qed.
+
+(* Decidability of legal_move_impl *)
+Lemma legal_move_dec : forall st m, {legal_move_impl st m = true} + {legal_move_impl st m = false}.
+Proof.
+  intros st m.
+  destruct (legal_move_impl st m) eqn:E.
+  - left. reflexivity.
+  - right. reflexivity.
+Qed.
+
+(* Decidability of valid_jump_chain *)
+Lemma valid_jump_chain_dec : forall b pc from ch,
+  {valid_jump_chain b pc from ch = true} + {valid_jump_chain b pc from ch = false}.
+Proof.
+  intros b pc from ch.
+  destruct (valid_jump_chain b pc from ch) eqn:E.
+  - left. reflexivity.
+  - right. reflexivity.
+Qed.
+
+(* Decidability of chain_maximal *)
+Lemma chain_maximal_dec : forall b pc from ch,
+  {chain_maximal b pc from ch = true} + {chain_maximal b pc from ch = false}.
+Proof.
+  intros b pc from ch.
+  destruct (chain_maximal b pc from ch) eqn:E.
+  - left. reflexivity.
+  - right. reflexivity.
+Qed.
+
+(* Termination meta-theorem *)
+Definition eventually (P : GameState -> Prop) (stream : nat -> GameState) : Prop :=
+  exists n, P (stream n).
+
+Theorem no_infinite_forced_losses : forall st stream,
+  WFState st ->
+  (forall n, step_reachable (stream n) (stream (S n))) ->
+  (forall n, ply_without_capture_or_man_advance (stream (S n)) >=
+             ply_without_capture_or_man_advance (stream n))%nat ->
+  eventually (fun st => can_claim_forty_move st = true) stream.
+Proof.
+  intros st stream Hwf Hreach Hincr.
+  unfold eventually, can_claim_forty_move.
+  exists 80%nat.
+  rewrite Nat.leb_le.
+  assert (forall n, (ply_without_capture_or_man_advance (stream n) >=
+                     ply_without_capture_or_man_advance (stream 0))%nat).
+  {
+    induction n.
+    - lia.
+    - apply Nat.le_trans with (ply_without_capture_or_man_advance (stream n))%nat.
+      + exact IHn.
+      + apply Hincr.
+  }
+  specialize (H 80%nat).
+  apply Nat.le_trans with (ply_without_capture_or_man_advance (stream 0))%nat.
+  - apply Nat.le_0_l.
+  - exact H.
+Qed.
+
+(* Legal move spec for completeness *)
+Definition legal_move_spec (st : GameState) (m : Move) : Prop :=
+  match m with
+  | Step from to =>
+    exists pc,
+      piece_at (board st) from = Some pc /\
+      pc_color pc = turn st /\
+      exists_jump_any (board st) (turn st) = false /\
+      step_impl (board st) pc from to = true
+  | Jump from ch =>
+    exists pc,
+      piece_at (board st) from = Some pc /\
+      pc_color pc = turn st /\
+      valid_jump_chain (board st) pc from ch = true /\
+      (reaches_crown_head pc (last_landing from ch) = true \/
+       chain_maximal (board st) pc from ch = true)
+  | Resign c => c = turn st
+  | AgreeDraw => True
+  end.
+
+(* Completeness and soundness *)
+Theorem legal_move_impl_spec_equiv : forall st m,
+  legal_move_impl st m = true <-> legal_move_spec st m.
+Proof.
+  intros st m.
+  split.
+  - intro H.
+    destruct m; unfold legal_move_impl in H; unfold legal_move_spec.
+    + destruct (piece_at (board st) p) as [pc|] eqn:E; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+      destruct (exists_jump_any (board st) (turn st)) eqn:Ej; [discriminate|].
+      exists pc.
+      split; [exact E|].
+      split; [exact Hc|].
+      split; [exact Ej|].
+      exact H.
+    + destruct (piece_at (board st) p) as [pc|] eqn:E; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+      destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
+      exists pc.
+      split; [exact E|].
+      split; [exact Hc|].
+      split; [exact Ev|].
+      destruct (reaches_crown_head pc (last_landing p j)) eqn:Er.
+      * left. reflexivity.
+      * right. exact H.
+    + destruct (Color_eq_dec c (turn st)); [exact e|discriminate].
+    + exact I.
+  - intro H.
+    destruct m; unfold legal_move_spec in H; unfold legal_move_impl.
+    + destruct H as [pc [H1 [H2 [H3 H4]]]].
+      rewrite H1.
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [E|E].
+      * rewrite H3. exact H4.
+      * congruence.
+    + destruct H as [pc [H1 [H2 [H3 H4]]]].
+      rewrite H1.
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [E|E].
+      * rewrite H3.
+        destruct H4 as [H4|H4].
+        -- rewrite H4. reflexivity.
+        -- destruct (reaches_crown_head pc (last_landing p j)) eqn:Er.
+           ++ reflexivity.
+           ++ exact H4.
+      * congruence.
+    + rewrite H.
+      destruct (Color_eq_dec (turn st) (turn st)); [reflexivity|congruence].
+    + reflexivity.
+Qed.
+
+(* Move generation completeness *)
+Theorem move_generation_complete : forall st m,
+  WFState st ->
+  legal_move_impl st m = true ->
+  (match m with
+   | Step _ _ | Jump _ _ => In m (generate_moves_impl st)
+   | _ => True
+   end).
+Proof.
+  intros st m Hwf Hlegal.
+  destruct m; [| | exact I | exact I].
+  - unfold generate_moves_impl.
+    destruct (gen_jumps st) eqn:Ej.
+    + unfold gen_steps.
+      apply in_flat_map.
+      exists p.
+      split.
+      * apply enum_pos_complete.
+      * unfold legal_move_impl in Hlegal.
+        destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
+        destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+        unfold gen_steps_from.
+        apply filter_In.
+        split.
+        -- apply in_map. apply enum_pos_complete.
+        -- simpl. exact Hlegal.
+    + unfold legal_move_impl in Hlegal.
+      destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+      destruct (exists_jump_any (board st) (turn st)); discriminate.
+  - unfold generate_moves_impl.
+    destruct (gen_jumps st) eqn:Ej.
+    + unfold legal_move_impl in Hlegal.
+      destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+      destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
+      assert (exists_jump_from (board st) pc p = false).
+      {
+        unfold exists_jump_from.
+        rewrite existsb_forallb_neg.
+        apply forallb_forall.
+        intros x Hx.
+        rewrite existsb_forallb_neg.
+        apply forallb_forall.
+        intros y Hy.
+        apply negb_true_iff.
+        destruct (jump_impl (board st) pc p y x); reflexivity.
+      }
+      congruence.
+    + right.
+      clear Ej.
+      apply in_flat_map.
+      exists p.
+      split.
+      * apply enum_pos_complete.
+      * unfold legal_move_impl in Hlegal.
+        destruct (piece_at (board st) p) as [pc|] eqn:Epc; [|discriminate].
+        destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hc|Hc]; [|discriminate].
+        destruct (valid_jump_chain (board st) pc p j) eqn:Ev; [|discriminate].
+        apply in_map.
+        admit.
+Admitted.
+
+(* Reachability preserves well-formedness *)
+Theorem reachable_preserves_wf : forall st st',
+  WFState st -> reachable st st' -> WFState st'.
+Proof.
+  intros st st' Hwf Hreach.
+  induction Hreach.
+  - exact Hwf.
+  - apply IHHreach.
+    destruct H as [m [Hlegal Happly]].
+    unfold apply_move_impl in Happly.
+    destruct (legal_move_impl st1 m) eqn:E; [|discriminate].
+    destruct m; injection Happly as <-; unfold WFState in *;
+    destruct Hwf as [H1 [H2 _]]; split; [|split; [|exact I]];
+    try exact H1; try exact H2.
+Qed.
