@@ -2682,3 +2682,152 @@ Qed.
 
 (* Switch back to Z scope for the rest of the file *)
 Local Open Scope Z_scope.
+
+(* ========================================================================= *)
+(* SECTION 20: EVALUATION (OPTIONAL HEURISTICS)                             *)
+(* ========================================================================= *)
+
+(* Material weights parameterization *)
+Definition man_weight : Z := 1.
+Definition king_weight : Z := 3.
+
+(* Maximum possible piece weight for bounds calculation *)
+Definition max_piece_weight : Z := Z.max man_weight king_weight.
+
+(* Count pieces by kind for a color *)
+Definition count_pieces_by_kind (b : Board) (c : Color) (k : PieceKind) : nat :=
+  List.length (filter (fun p =>
+    match b p with
+    | Some pc => andb (if Color_eq_dec (pc_color pc) c then true else false)
+                      (if PieceKind_eq_dec (pc_kind pc) k then true else false)
+    | None => false
+    end
+  ) enum_pos).
+
+(* Material value for a color *)
+Definition material_value (b : Board) (c : Color) : Z :=
+  let men := Z.of_nat (count_pieces_by_kind b c Man) in
+  let kings := Z.of_nat (count_pieces_by_kind b c King) in
+  men * man_weight + kings * king_weight.
+
+(* Helper: get rank progress for a man (0 at start, 6 at crown-head minus 1) *)
+Definition man_advancement (c : Color) (p : Position) : Z :=
+  match c with
+  | Dark => rankZ (rank p)  (* Dark advances toward rank 7 *)
+  | Light => 7 - rankZ (rank p)  (* Light advances toward rank 0 *)
+  end.
+
+(* Positional evaluation: advancement bonus for men *)
+Definition advancement_value (b : Board) (c : Color) : Z :=
+  fold_left Z.add
+    (map (fun p =>
+      match b p with
+      | Some pc =>
+        if andb (if Color_eq_dec (pc_color pc) c then true else false)
+                (if PieceKind_eq_dec (pc_kind pc) Man then true else false)
+        then man_advancement c p
+        else 0
+      | None => 0
+      end
+    ) enum_pos) 0.
+
+(* Center control evaluation *)
+Definition is_center_square (p : Position) : bool :=
+  let r := fin8_to_nat (rank p) in
+  let f := fin8_to_nat (file p) in
+  andb (andb (Nat.leb 2 r) (Nat.leb r 5))
+       (andb (Nat.leb 2 f) (Nat.leb f 5)).
+
+Definition center_control_value (b : Board) (c : Color) : Z :=
+  Z.of_nat (List.length (filter (fun p =>
+    andb (is_center_square p)
+         (occupied_by b c p)
+  ) enum_pos)).
+
+(* Mobility: count legal moves *)
+Definition mobility_value (st : GameState) : Z :=
+  if Color_eq_dec (turn st) (turn st) then
+    Z.of_nat (List.length (generate_moves_impl st))
+  else 0.
+
+(* Tempo bonus: whose turn it is *)
+Definition tempo_value (st : GameState) (c : Color) : Z :=
+  if Color_eq_dec (turn st) c then 1 else 0.
+
+(* Main evaluation function *)
+Definition evaluate (st : GameState) (c : Color) : Z :=
+  let mat := material_value (board st) c - material_value (board st) (opp c) in
+  let adv := advancement_value (board st) c - advancement_value (board st) (opp c) in
+  let center := center_control_value (board st) c - center_control_value (board st) (opp c) in
+  let mob := if Color_eq_dec (turn st) c
+             then mobility_value st
+             else - mobility_value st in
+  let tempo := tempo_value st c in
+  mat * 100 + adv * 10 + center * 5 + mob * 2 + tempo.
+
+(* Helper lemmas for bounds proof *)
+Lemma filter_length_le : forall A (f : A -> bool) (l : list A),
+  (List.length (filter f l) <= List.length l)%nat.
+Proof.
+  intros A f l.
+  induction l.
+  - simpl. auto.
+  - simpl. destruct (f a).
+    + simpl. apply le_n_S. exact IHl.
+    + apply le_S. exact IHl.
+Qed.
+
+Lemma count_pieces_by_kind_bounded : forall b c k,
+  (count_pieces_by_kind b c k <= 32)%nat.
+Proof.
+  intros b c k.
+  unfold count_pieces_by_kind.
+  assert (H: (List.length (filter (fun p : Position =>
+    match b p with
+    | Some pc => andb (if Color_eq_dec (pc_color pc) c then true else false)
+                      (if PieceKind_eq_dec (pc_kind pc) k then true else false)
+    | None => false
+    end) enum_pos) <= List.length enum_pos)%nat).
+  {
+    apply filter_length_le.
+  }
+  rewrite enum_pos_length in H.
+  exact H.
+Qed.
+
+Lemma Z_of_nat_le : forall n m : nat,
+  (n <= m)%nat -> Z.of_nat n <= Z.of_nat m.
+Proof.
+  intros n m H.
+  rewrite <- Nat2Z.inj_le.
+  exact H.
+Qed.
+
+Lemma material_value_bounded : forall b c,
+  0 <= material_value b c <= 64 * max_piece_weight.
+Proof.
+  intros b c.
+  unfold material_value, max_piece_weight.
+  split.
+  - assert (H1: 0 <= Z.of_nat (count_pieces_by_kind b c Man)) by apply Zle_0_nat.
+    assert (H2: 0 <= Z.of_nat (count_pieces_by_kind b c King)) by apply Zle_0_nat.
+    assert (H3: 0 <= man_weight) by (unfold man_weight; lia).
+    assert (H4: 0 <= king_weight) by (unfold king_weight; lia).
+    apply Z.add_nonneg_nonneg.
+    + apply Z.mul_nonneg_nonneg; assumption.
+    + apply Z.mul_nonneg_nonneg; assumption.
+  - assert (Hmen: (count_pieces_by_kind b c Man <= 32)%nat)
+      by apply count_pieces_by_kind_bounded.
+    assert (Hkings: (count_pieces_by_kind b c King <= 32)%nat)
+      by apply count_pieces_by_kind_bounded.
+    apply Z_of_nat_le in Hmen.
+    apply Z_of_nat_le in Hkings.
+    unfold man_weight, king_weight.
+    assert (HMax: Z.max 1 3 = 3) by (unfold Z.max; simpl; reflexivity).
+    rewrite HMax.
+    apply Z.le_trans with (32 * man_weight + 32 * king_weight).
+    + apply Z.add_le_mono.
+      * apply Z.mul_le_mono_nonneg_r; [unfold man_weight; lia | exact Hmen].
+      * apply Z.mul_le_mono_nonneg_r; [unfold king_weight; lia | exact Hkings].
+    + unfold man_weight, king_weight. simpl. lia.
+Qed.
