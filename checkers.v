@@ -1342,24 +1342,22 @@ Fixpoint valid_jump_chain_rec (b : Board) (pc : Piece) (from : Position)
     let to := link_to link in
     if is_empty_transient b to vacated_so_far then
       if has_opponent_transient b (pc_color pc) over captured_so_far then
-        if negb (existsb (position_eqb over) captured_so_far) then
-          if diag_jump_dec from over to then
-            match pc_kind pc with
-            | Man =>
-              if forward_of_dec (pc_color pc) (rank from) (rank to) then
-                if reaches_crown_head pc to && negb (match rest with [] => true | _ => false end) then
-                  false
-                else
-                  valid_jump_chain_rec b pc to rest
-                    (over :: captured_so_far)
-                    (from :: vacated_so_far)
-              else false
-            | King =>
-              valid_jump_chain_rec b pc to rest
-                (over :: captured_so_far)
-                (from :: vacated_so_far)
-            end
-          else false
+        if diag_jump_dec from over to then
+          match pc_kind pc with
+          | Man =>
+            if forward_of_dec (pc_color pc) (rank from) (rank to) then
+              if reaches_crown_head pc to && negb (match rest with [] => true | _ => false end) then
+                false
+              else
+                valid_jump_chain_rec b pc to rest
+                  (over :: captured_so_far)
+                  (from :: vacated_so_far)
+            else false
+          | King =>
+            valid_jump_chain_rec b pc to rest
+              (over :: captured_so_far)
+              (from :: vacated_so_far)
+          end
         else false
       else false
     else false
@@ -1429,14 +1427,6 @@ Definition step_legal_with_forcing (b : Board) (c : Color) (pc : Piece) (from to
     false  (* No steps allowed when captures exist *)
   else
     step_impl b pc from to.
-
-(* During a chain, must continue if another jump is available *)
-Definition must_continue_chain (b : Board) (pc : Piece) (pos : Position) : bool :=
-  (* Unless promotion just occurred *)
-  if reaches_crown_head pc pos then
-    false  (* Chain ends on promotion *)
-  else
-    exists_jump_from b pc pos.
 
 (* Validation example for Section 9 *)
 Example mandatory_capture_blocks_steps : forall b from to pc,
