@@ -1513,12 +1513,18 @@ Module PositionMultiset.
   Qed.
 End PositionMultiset.
 
+(* Game result - moved here to be available for GameState *)
+Inductive GameResult :=
+| Win : Color -> GameResult
+| Draw : GameResult.
+
 (* Game state record *)
 Record GameState := mkGameState {
   board : Board;
   turn : Color;
   ply_without_capture_or_man_advance : nat;
-  repetition_book : PositionMultiset.t  (* Multiset for tracking positions *)
+  repetition_book : PositionMultiset.t;  (* Multiset for tracking positions *)
+  result : option GameResult  (* Terminal result if game has ended *)
 }.
 
 (* Generate key from state *)
@@ -1545,7 +1551,7 @@ Definition WFState (st : GameState) : Prop :=
 
 (* Initial game state *)
 Definition initial_state : GameState :=
-  mkGameState initial_board Dark 0 PositionMultiset.empty.
+  mkGameState initial_board Dark 0 PositionMultiset.empty None.
 
 (* Helper: count initial pieces *)
 Lemma initial_dark_count : count_pieces initial_board Dark = 12%nat.
@@ -1679,6 +1685,34 @@ Definition legal_move_impl (st : GameState) (m : Move) : bool :=
     true
   end.
 
+(* Specification for move legality - propositional version *)
+Definition legal_move_spec (st : GameState) (m : Move) : Prop :=
+  match m with
+  | Step from to =>
+    (* There exists a piece of the right color at from *)
+    exists pc, piece_at (board st) from = Some pc /\
+               pc_color pc = turn st /\
+               (* No captures are available *)
+               exists_jump_any (board st) (turn st) = false /\
+               (* The step is valid *)
+               step_impl (board st) pc from to = true
+  | Jump from ch =>
+    (* There exists a piece of the right color at from *)
+    exists pc, piece_at (board st) from = Some pc /\
+               pc_color pc = turn st /\
+               (* The chain is valid *)
+               valid_jump_chain (board st) pc from ch = true /\
+               (* The chain is maximal or ends in promotion *)
+               (reaches_crown_head pc (last_landing from ch) = true \/
+                chain_maximal (board st) pc from ch = true)
+  | Resign c =>
+    (* Player can only resign on their turn *)
+    c = turn st
+  | AgreeDraw =>
+    (* Draw agreements are always legal *)
+    True
+  end.
+
 (* Simplified validation for Section 12 *)
 Example legal_move_respects_turn : forall st m,
   legal_move_impl st m = true ->
@@ -1774,7 +1808,8 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         new_board
         (opp (turn st))
         new_ply
-        (PositionMultiset.add new_key (repetition_book st)))
+        (PositionMultiset.add new_key (repetition_book st))
+        None)
     | Jump from ch =>
       let new_board := apply_jump (board st) from ch in
       let new_key := (new_board, opp (turn st)) in
@@ -1782,17 +1817,93 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         new_board
         (opp (turn st))
         0%nat  (* Reset counter on capture *)
-        (PositionMultiset.add new_key (repetition_book st)))
+        (PositionMultiset.add new_key (repetition_book st))
+        None)
     | Resign c =>
       (* Resignation is a valid move that ends the game *)
       (* The resigning player's opponent wins *)
-      (* Return the state unchanged but with turn indicating the result *)
-      Some st
+      Some (mkGameState
+        (board st)
+        (turn st)
+        (ply_without_capture_or_man_advance st)
+        (repetition_book st)
+        (Some (Win (opp c))))
     | AgreeDraw =>
       (* Draw agreement is a valid terminal move *)
-      Some st
+      Some (mkGameState
+        (board st)
+        (turn st)
+        (ply_without_capture_or_man_advance st)
+        (repetition_book st)
+        (Some Draw))
     end
   else None.
+
+(* Specification for apply_move - describes the effect of applying a legal move *)
+Definition apply_move_spec (st : GameState) (m : Move) (st' : GameState) : Prop :=
+  (* Move must be legal *)
+  legal_move_spec st m /\
+  (* State transformation *)
+  match m with
+  | Step from to =>
+    (* Board changes *)
+    let pc := piece_at (board st) from in
+    exists piece,
+      pc = Some piece /\
+      (* Move the piece, potentially promoting *)
+      let pc' := if reaches_crown_head piece to then promote_piece piece else piece in
+      board st' = board_set (board_set (board st) from None) to (Some pc') /\
+      (* Turn switches *)
+      turn st' = opp (turn st) /\
+      (* Ply counter updates *)
+      (ply_without_capture_or_man_advance st' =
+        if is_man_forward_step (board st) m then 0%nat
+        else S (ply_without_capture_or_man_advance st)) /\
+      (* Repetition book updates *)
+      repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
+      (* No terminal result *)
+      result st' = None
+  | Jump from ch =>
+    (* Board changes *)
+    let pc := piece_at (board st) from in
+    exists piece,
+      pc = Some piece /\
+      (* Apply all captures and move piece *)
+      let last_pos := last_landing from ch in
+      let pc' := if reaches_crown_head piece last_pos then promote_piece piece else piece in
+      let b_cleared := fold_left (fun b over => board_set b over None) (captures_of ch) (board st) in
+      board st' = board_set (board_set b_cleared from None) last_pos (Some pc') /\
+      (* Turn switches *)
+      turn st' = opp (turn st) /\
+      (* Ply counter resets *)
+      ply_without_capture_or_man_advance st' = 0%nat /\
+      (* Repetition book updates *)
+      repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
+      (* No terminal result *)
+      result st' = None
+  | Resign c =>
+    (* Board unchanged *)
+    board st' = board st /\
+    (* Turn unchanged *)
+    turn st' = turn st /\
+    (* Ply counter unchanged *)
+    ply_without_capture_or_man_advance st' = ply_without_capture_or_man_advance st /\
+    (* Repetition book unchanged *)
+    repetition_book st' = repetition_book st /\
+    (* Terminal result: opponent wins *)
+    result st' = Some (Win (opp c))
+  | AgreeDraw =>
+    (* Board unchanged *)
+    board st' = board st /\
+    (* Turn unchanged *)
+    turn st' = turn st /\
+    (* Ply counter unchanged *)
+    ply_without_capture_or_man_advance st' = ply_without_capture_or_man_advance st /\
+    (* Repetition book unchanged *)
+    repetition_book st' = repetition_book st /\
+    (* Terminal result: draw *)
+    result st' = Some Draw
+  end.
 
 (* Validation for Section 13 *)
 Example apply_legal_succeeds : forall st m,
@@ -1959,21 +2070,21 @@ Definition has_no_legal_moves (st : GameState) : bool :=
   | _ => false
   end.
 
-(* Game result *)
-Inductive GameResult :=
-| Win : Color -> GameResult
-| Draw : GameResult.
-
 (* Check if game is terminal and get result *)
 Definition is_terminal (st : GameState) : option GameResult :=
-  if has_no_pieces (board st) (turn st) then
-    Some (Win (opp (turn st)))
-  else if has_no_pieces (board st) (opp (turn st)) then
-    Some (Win (turn st))
-  else if has_no_legal_moves st then
-    Some (Win (opp (turn st)))
-  else
-    None.
+  match result st with
+  | Some r => Some r  (* Game already has a terminal result *)
+  | None =>
+    (* Check for other terminal conditions *)
+    if has_no_pieces (board st) (turn st) then
+      Some (Win (opp (turn st)))
+    else if has_no_pieces (board st) (opp (turn st)) then
+      Some (Win (turn st))
+    else if has_no_legal_moves st then
+      Some (Win (opp (turn st)))
+    else
+      None
+  end.
 
 (* Check for threefold repetition *)
 Definition count_position_key (key : PositionKey) (book : PositionMultiset.t) : nat :=
@@ -1990,13 +2101,15 @@ Definition can_claim_threefold (st : GameState) : bool :=
 (* Validation for Section 16 *)
 Example immobilization_loses : forall st,
   WFState st ->
+  result st = None ->  (* Game not already terminated *)
   has_no_legal_moves st = true ->
   has_no_pieces (board st) (turn st) = false ->
   has_no_pieces (board st) (opp (turn st)) = false ->
   is_terminal st = Some (Win (opp (turn st))).
 Proof.
-  intros st Hwf Hno_moves Hhas_pieces Hopp_has_pieces.
+  intros st Hwf Hresult Hno_moves Hhas_pieces Hopp_has_pieces.
   unfold is_terminal.
+  rewrite Hresult.
   rewrite Hhas_pieces, Hopp_has_pieces, Hno_moves.
   reflexivity.
 Qed.
@@ -3559,4 +3672,133 @@ Proof.
   destruct (Color_eq_dec (pc_color pc) (turn st)); [|contradiction].
   rewrite Hno_jumps.
   exact Hstep.
+Qed.
+
+(* Theorem: legal_move_impl correctly implements legal_move_spec *)
+Theorem legal_move_impl_correct : forall st m,
+  legal_move_impl st m = true <-> legal_move_spec st m.
+Proof.
+  intros st m.
+  split.
+  - (* impl -> spec *)
+    intro H.
+    unfold legal_move_impl in H.
+    unfold legal_move_spec.
+    destruct m.
+    + (* Step case *)
+      destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)); [|discriminate].
+      destruct (exists_jump_any (board st) (turn st)) eqn:Hjump; [discriminate|].
+      exists pc. auto.
+    + (* Jump case *)
+      destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+      destruct (Color_eq_dec (pc_color pc) (turn st)) as [Heq|]; [|discriminate].
+      destruct (valid_jump_chain (board st) pc p j) eqn:Hvalid; [|discriminate].
+      exists pc. split; [reflexivity|]. split; [exact Heq|]. split; [exact Hvalid|].
+      destruct (reaches_crown_head pc (last_landing p j)) eqn:Hcrown.
+      * left. reflexivity.
+      * right. exact H.
+    + (* Resign case *)
+      destruct (Color_eq_dec c (turn st)) as [Heq|]; [exact Heq|discriminate].
+    + (* AgreeDraw case *)
+      exact I.
+  - (* spec -> impl *)
+    intro H.
+    unfold legal_move_spec in H.
+    unfold legal_move_impl.
+    destruct m.
+    + (* Step case *)
+      destruct H as [pc [Hpc [Hcolor [Hjump Hstep]]]].
+      rewrite Hpc. rewrite <- Hcolor.
+      destruct (Color_eq_dec (pc_color pc) (pc_color pc)) as [_|Hcontra]; [|exfalso; apply Hcontra; reflexivity].
+      simpl. rewrite Hcolor. rewrite Hjump. exact Hstep.
+    + (* Jump case *)
+      destruct H as [pc [Hpc [Hcolor [Hvalid Hmax]]]].
+      rewrite Hpc. rewrite <- Hcolor.
+      destruct (Color_eq_dec (pc_color pc) (pc_color pc)) as [_|Hcontra]; [|exfalso; apply Hcontra; reflexivity].
+      rewrite Hvalid.
+      destruct Hmax as [Hcrown|Hmax].
+      * rewrite Hcrown. reflexivity.
+      * destruct (reaches_crown_head pc (last_landing p j)); [reflexivity|exact Hmax].
+    + (* Resign case *)
+      rewrite <- H.
+      destruct (Color_eq_dec c c) as [_|Hcontra]; [reflexivity|exfalso; apply Hcontra; reflexivity].
+    + (* AgreeDraw case *)
+      reflexivity.
+Qed.
+
+(* Theorem: apply_move_impl correctly implements apply_move_spec - forward direction only *)
+Theorem apply_move_impl_sound : forall st m st',
+  apply_move_impl st m = Some st' -> apply_move_spec st m st'.
+Proof.
+  intros st m st' H.
+  unfold apply_move_impl in H.
+  destruct (legal_move_impl st m) eqn:Hlegal; [|discriminate].
+  apply legal_move_impl_correct in Hlegal.
+  unfold apply_move_spec.
+  split; [exact Hlegal|].
+  destruct m; injection H as <-; simpl.
+  + (* Step *)
+    unfold legal_move_spec in Hlegal. simpl in Hlegal.
+    destruct Hlegal as [pc [Hpc [Hcolor [Hjump Hstep]]]].
+    exists pc. split; [congruence|].
+    unfold apply_step. rewrite Hpc.
+    repeat split; reflexivity.
+  + (* Jump *)
+    unfold legal_move_spec in Hlegal. simpl in Hlegal.
+    destruct Hlegal as [pc [Hpc [Hcolor [Hvalid Hmax]]]].
+    exists pc. split; [congruence|].
+    unfold apply_jump. rewrite Hpc.
+    repeat split; reflexivity.
+  + (* Resign *) repeat split; reflexivity.
+  + (* AgreeDraw *) repeat split; reflexivity.
+Qed.
+
+(* Theorem: apply_move_impl correctly implements apply_move_spec - backward direction only *)
+Theorem apply_move_impl_complete : forall st m st',
+  apply_move_spec st m st' -> apply_move_impl st m = Some st'.
+Proof.
+  intros st m st' H.
+  unfold apply_move_spec in H.
+  destruct H as [Hlegal Htrans].
+  apply legal_move_impl_correct in Hlegal.
+  unfold apply_move_impl.
+  rewrite Hlegal.
+  destruct m; simpl in Htrans.
+  - (* Step *)
+    destruct Htrans as [piece [Hpiece [Hboard [Hturn [Hply [Hbook Hresult]]]]]].
+    f_equal.
+    destruct st as [b t ply rb res].
+    destruct st' as [b' t' ply' rb' res'].
+    simpl in *.
+    subst.
+    unfold apply_step.
+    rewrite Hpiece.
+    reflexivity.
+  - (* Jump *)
+    destruct Htrans as [piece [Hpiece [Hboard [Hturn [Hply [Hbook Hresult]]]]]].
+    f_equal.
+    destruct st as [b t ply rb res].
+    destruct st' as [b' t' ply' rb' res'].
+    simpl in *.
+    subst.
+    unfold apply_jump.
+    rewrite Hpiece.
+    reflexivity.
+  - (* Resign *)
+    destruct Htrans as [Hboard [Hturn [Hply [Hbook Hresult]]]].
+    f_equal.
+    destruct st as [b t ply rb res].
+    destruct st' as [b' t' ply' rb' res'].
+    simpl in *.
+    subst.
+    reflexivity.
+  - (* AgreeDraw *)
+    destruct Htrans as [Hboard [Hturn [Hply [Hbook Hresult]]]].
+    f_equal.
+    destruct st as [b t ply rb res].
+    destruct st' as [b' t' ply' rb' res'].
+    simpl in *.
+    subst.
+    reflexivity.
 Qed.
