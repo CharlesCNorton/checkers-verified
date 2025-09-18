@@ -18,7 +18,7 @@ Require Import Coq.MSets.MSetList.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Arith.EqNat.
-Require Import Coq.micromega.Lia.
+Require Import Coq.micromega.Lia.  (* Replaced omega with lia *)
 Require Import Coq.Classes.EquivDec.
 Require Import Coq.Classes.SetoidClass.
 Require Import Coq.Relations.Relations.
@@ -1315,43 +1315,58 @@ Definition position_eqb (p1 p2 : Position) : bool :=
   | right _ => false
   end.
 
-(* Valid jump chain relative to a board *)
+(* Transient board helpers for capture chains *)
+Definition is_empty_transient (b : Board) (p : Position)
+                              (vacated : list Position) : bool :=
+  if existsb (position_eqb p) vacated then
+    true
+  else
+    negb (occupied b p).
+
+Definition has_opponent_transient (b : Board) (c : Color) (p : Position)
+                                  (captured : list Position) : bool :=
+  if existsb (position_eqb p) captured then
+    false
+  else
+    occupied_by b (opp c) p.
+
+(* Valid jump chain relative to a board with transient state *)
 Fixpoint valid_jump_chain_rec (b : Board) (pc : Piece) (from : Position)
-                              (ch : JumpChain) (captured_so_far : list Position) : bool :=
+                              (ch : JumpChain)
+                              (captured_so_far : list Position)
+                              (vacated_so_far : list Position) : bool :=
   match ch with
   | [] => true
   | link :: rest =>
     let over := link_over link in
     let to := link_to link in
-    (* Check this jump is valid on current transient board *)
-    (* But captured pieces remain as blockers *)
-    let transient_b := b in  (* Captured pieces stay on board during chain *)
-    if negb (occupied transient_b to) then
-      if occupied_by transient_b (opp (pc_color pc)) over then
+    if is_empty_transient b to vacated_so_far then
+      if has_opponent_transient b (pc_color pc) over captured_so_far then
         if negb (existsb (position_eqb over) captured_so_far) then
-          (* Check jump geometry - must be straight diagonal jump *)
           if diag_jump_dec from over to then
-            (* Check directionality for Man *)
             match pc_kind pc with
             | Man =>
               if forward_of_dec (pc_color pc) (rank from) (rank to) then
-                (* Check if promotion ends chain *)
                 if reaches_crown_head pc to && negb (match rest with [] => true | _ => false end) then
-                  false  (* Promotion must end chain *)
+                  false
                 else
-                  valid_jump_chain_rec b pc to rest (over :: captured_so_far)
+                  valid_jump_chain_rec b pc to rest
+                    (over :: captured_so_far)
+                    (from :: vacated_so_far)
               else false
             | King =>
-              valid_jump_chain_rec b pc to rest (over :: captured_so_far)
+              valid_jump_chain_rec b pc to rest
+                (over :: captured_so_far)
+                (from :: vacated_so_far)
             end
           else false
-        else false  (* Can't capture same piece twice *)
-      else false  (* Must jump over opponent *)
-    else false  (* Landing must be empty *)
+        else false
+      else false
+    else false
   end.
 
 Definition valid_jump_chain (b : Board) (pc : Piece) (from : Position) (ch : JumpChain) : bool :=
-  valid_jump_chain_rec b pc from ch [].
+  valid_jump_chain_rec b pc from ch [] [].
 
 (* Check if any jump exists from a position *)
 Definition exists_jump_from (b : Board) (pc : Piece) (from : Position) : bool :=
@@ -1361,12 +1376,28 @@ Definition exists_jump_from (b : Board) (pc : Piece) (from : Position) : bool :=
     ) enum_pos
   ) enum_pos.
 
+(* Check if any jump exists from a position with transient state *)
+Definition exists_jump_from_transient (b : Board) (pc : Piece) (from : Position)
+                                      (captured : list Position)
+                                      (vacated : list Position) : bool :=
+  existsb (fun to =>
+    if is_empty_transient b to vacated then
+      existsb (fun over =>
+        if negb (existsb (position_eqb over) captured) then
+          if has_opponent_transient b (pc_color pc) over captured then
+            diag_jump_dec from over to
+          else false
+        else false
+      ) enum_pos
+    else false
+  ) enum_pos.
+
 (* Chain is maximal if no further jump exists from the last landing *)
 Definition chain_maximal (b : Board) (pc : Piece) (from : Position) (ch : JumpChain) : bool :=
   let last_pos := last_landing from ch in
-  (* Apply the chain's captures to get the board state after the chain *)
-  let b_after := apply_captures_transient b (captures_of ch) in
-  negb (exists_jump_from b_after pc last_pos).
+  let captured := captures_of ch in
+  let vacated := from :: map link_to ch in
+  negb (exists_jump_from_transient b pc last_pos captured vacated).
 
 (* Simpler validation: captures_of gives the over positions *)
 Example captures_of_extracts_overs : forall ch,
@@ -1807,32 +1838,29 @@ Definition find_single_jumps (b : Board) (pc : Piece) (from : Position) : list (
 (* Build all maximal jump chains from a position *)
 (* This is recursive and builds only chains that are maximal *)
 Fixpoint build_maximal_chains_aux
-  (fuel : nat) (* Termination fuel *)
+  (fuel : nat)
   (b : Board)
   (pc : Piece)
   (from : Position)
   (chain_so_far : JumpChain)
-  (captured_so_far : list Position) : list JumpChain :=
+  (captured_so_far : list Position)
+  (vacated_so_far : list Position) : list JumpChain :=
   match fuel with
-  | 0%nat => [chain_so_far] (* Out of fuel, return current chain *)
+  | 0%nat => [chain_so_far]
   | S fuel' =>
-    (* Check if promotion would occur here *)
     if reaches_crown_head pc from then
-      [chain_so_far] (* Chain ends at promotion *)
+      [chain_so_far]
     else
-      (* Find possible continuations *)
       let possible_jumps := find_single_jumps b pc from in
       let valid_jumps := filter (fun jump =>
         let over := fst jump in
         let to := snd jump in
-        (* Check: not already captured and landing is empty *)
         negb (existsb (position_eqb over) captured_so_far) &&
-        negb (occupied b to)
+        is_empty_transient b to vacated_so_far
       ) possible_jumps in
       match valid_jumps with
-      | [] => [chain_so_far] (* No more jumps, chain is maximal *)
+      | [] => [chain_so_far]
       | _ =>
-        (* Extend chain with each possible jump *)
         flat_map (fun jump =>
           let over := fst jump in
           let to := snd jump in
@@ -1840,17 +1868,15 @@ Fixpoint build_maximal_chains_aux
           build_maximal_chains_aux fuel' b pc to
             (chain_so_far ++ [new_link])
             (over :: captured_so_far)
+            (from :: vacated_so_far)
         ) valid_jumps
       end
   end.
 
 (* Main function to build maximal chains from a position *)
 Definition build_maximal_chains (b : Board) (pc : Piece) (from : Position) : list JumpChain :=
-  (* Check if there's at least one jump available *)
   if exists_jump_from b pc from then
-    (* Use fuel = 32 (max possible chain length) *)
-    let chains := build_maximal_chains_aux 32 b pc from [] [] in
-    (* Filter out empty chains *)
+    let chains := build_maximal_chains_aux 32 b pc from [] [] [] in
     filter (fun ch => negb (match ch with [] => true | _ => false end)) chains
   else
     [].
@@ -2203,6 +2229,17 @@ Example straight_diagonal_jump_accepted :
     andb (Z.eqb (Z.abs (rt - rf)) 2) (Z.eqb (Z.abs (ft - ff)) 2)
   | _, _, _ => false
   end = true.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Test: Transient board state correctly identifies vacated squares as empty *)
+Example transient_vacated_is_empty :
+  match get_position_from_number 9 with
+  | Some p => is_empty_transient initial_board p [p] = true
+  | None => True
+  end.
 Proof.
   vm_compute.
   reflexivity.
@@ -3309,8 +3346,8 @@ Qed.
 
 
 (* Helper lemma 3: build_maximal_chains_aux with 0 fuel returns [chain_so_far] *)
-Lemma build_maximal_chains_aux_zero_fuel : forall b pc from chain_so_far captured_so_far,
-  build_maximal_chains_aux 0 b pc from chain_so_far captured_so_far = [chain_so_far].
+Lemma build_maximal_chains_aux_zero_fuel : forall b pc from chain_so_far captured_so_far vacated_so_far,
+  build_maximal_chains_aux 0 b pc from chain_so_far captured_so_far vacated_so_far = [chain_so_far].
 Proof.
   intros.
   reflexivity.
@@ -3345,7 +3382,7 @@ Lemma build_maximal_chains_empty_iff_filter_empty : forall b pc from,
                                      | [] => true
                                      | _ :: _ => false
                                      end)
-         (build_maximal_chains_aux 32 b pc from [] []) = [].
+         (build_maximal_chains_aux 32 b pc from [] [] []) = [].
 Proof.
   intros b pc from H.
   unfold build_maximal_chains.
