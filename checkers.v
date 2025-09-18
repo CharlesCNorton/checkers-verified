@@ -18,7 +18,7 @@ Require Import Coq.MSets.MSetList.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Arith.EqNat.
-Require Import Coq.micromega.Lia.  (* Replaced omega with lia *)
+Require Import Coq.micromega.Lia.
 Require Import Coq.Classes.EquivDec.
 Require Import Coq.Classes.SetoidClass.
 Require Import Coq.Relations.Relations.
@@ -669,6 +669,143 @@ Proof.
   apply position_is_dark.
 Qed.
 
+(* Helper lemma: Z.to_nat and then Z.of_nat round-trip for small values *)
+Lemma Z_to_of_nat_inv : forall z,
+  0 <= z < 8 ->
+  Z.of_nat (Z.to_nat z) = z.
+Proof.
+  intros z H.
+  apply Z2Nat.id.
+  lia.
+Qed.
+
+(* Helper lemma: fin8_of_nat preserves the nat value *)
+Lemma fin8_of_nat_to_nat : forall n (H : (n < 8)%nat),
+  fin8_to_nat (fin8_of_nat H) = n.
+Proof.
+  intros n H.
+  unfold fin8_of_nat, fin8_to_nat.
+  rewrite Fin.to_nat_of_nat.
+  reflexivity.
+Qed.
+
+(* Helper lemma: off preserves dark square property *)
+Lemma off_preserves_dark : forall p dr df p',
+  off p dr df = Some p' ->
+  dark (rank p') (file p') = true.
+Proof.
+  intros p dr df p' H.
+  apply position_is_dark.
+Qed.
+
+(* Helper lemma: coordinates after offset *)
+Lemma off_coords : forall p dr df p',
+  off p dr df = Some p' ->
+  rankZ (rank p') = rankZ (rank p) + dr /\
+  fileZ (file p') = fileZ (file p) + df.
+Proof.
+  intros p dr df p' H.
+  unfold off in H.
+  destruct ((0 <=? rankZ (rank p) + dr) && (rankZ (rank p) + dr <? 8) &&
+            (0 <=? fileZ (file p) + df) && (fileZ (file p) + df <? 8)) eqn:Hbounds.
+  2: { discriminate. }
+  apply bounds_check_components in Hbounds.
+  destruct Hbounds as [Hr1 [Hr2 [Hf1 Hf2]]].
+  remember (Z.to_nat (rankZ (rank p) + dr)) as r_nat eqn:Er.
+  remember (Z.to_nat (fileZ (file p) + df)) as f_nat eqn:Ef.
+  destruct (lt_dec r_nat 8) as [Hrlt|]; [|discriminate].
+  destruct (lt_dec f_nat 8) as [Hflt|]; [|discriminate].
+  destruct (mk_pos (fin8_of_nat Hrlt) (fin8_of_nat Hflt)) eqn:Emk; [|discriminate].
+  injection H as <-.
+  apply mk_pos_some_inv in Emk.
+  destruct Emk as [Hr Hf].
+  split.
+  - unfold rankZ. rewrite Hr.
+    rewrite fin8_of_nat_to_nat.
+    subst r_nat.
+    apply Z_to_of_nat_inv.
+    split; assumption.
+  - unfold fileZ. rewrite Hf.
+    rewrite fin8_of_nat_to_nat.
+    subst f_nat.
+    apply Z_to_of_nat_inv.
+    split; assumption.
+Qed.
+
+(* Main validation: offset roundtrip *)
+Example offset_roundtrip : forall p dr df p',
+  off p dr df = Some p' ->
+  off p' (-dr) (-df) = Some p.
+Proof.
+  intros p dr df p' H.
+  unfold off in H.
+  destruct ((0 <=? rankZ (rank p) + dr) && (rankZ (rank p) + dr <? 8) &&
+            (0 <=? fileZ (file p) + df) && (fileZ (file p) + df <? 8)) eqn:Hbounds.
+  2: { discriminate. }
+  apply bounds_check_components in Hbounds.
+  destruct Hbounds as [Hr1 [Hr2 [Hf1 Hf2]]].
+  remember (Z.to_nat (rankZ (rank p) + dr)) as r_new.
+  remember (Z.to_nat (fileZ (file p) + df)) as f_new.
+  destruct (lt_dec r_new 8) as [Hr_lt|]; [|discriminate].
+  destruct (lt_dec f_new 8) as [Hf_lt|]; [|discriminate].
+  destruct (mk_pos (fin8_of_nat Hr_lt) (fin8_of_nat Hf_lt)) eqn:Emk; [|discriminate].
+  injection H as <-.
+  apply mk_pos_some_inv in Emk.
+  destruct Emk as [Hr_p' Hf_p'].
+  unfold off.
+  rewrite Hr_p', Hf_p'.
+  assert (Hr_conv: fin8_to_nat (fin8_of_nat Hr_lt) = r_new) by apply fin8_of_nat_to_nat.
+  assert (Hf_conv: fin8_to_nat (fin8_of_nat Hf_lt) = f_new) by apply fin8_of_nat_to_nat.
+  unfold rankZ, fileZ.
+  rewrite Hr_conv, Hf_conv.
+  subst r_new f_new.
+  rewrite !Z2Nat.id; try lia.
+  replace (rankZ (rank p) + dr + - dr) with (rankZ (rank p)) by ring.
+  replace (fileZ (file p) + df + - df) with (fileZ (file p)) by ring.
+  assert (Hbounds_p: 0 <= rankZ (rank p) < 8 /\ 0 <= fileZ (file p) < 8)
+    by apply position_coords_bounded.
+  destruct Hbounds_p as [[Hrp1 Hrp2] [Hfp1 Hfp2]].
+  assert (Hcheck: (0 <=? rankZ (rank p)) && (rankZ (rank p) <? 8) &&
+                  (0 <=? fileZ (file p)) && (fileZ (file p) <? 8) = true).
+  { repeat rewrite andb_true_iff.
+    repeat split.
+    - apply Z.leb_le. exact Hrp1.
+    - apply Z.ltb_lt. exact Hrp2.
+    - apply Z.leb_le. exact Hfp1.
+    - apply Z.ltb_lt. exact Hfp2. }
+  rewrite Hcheck.
+  assert (Hr_nat: (Z.to_nat (rankZ (rank p)) < 8)%nat).
+  { apply Nat2Z.inj_lt. rewrite Z2Nat.id; lia. }
+  assert (Hf_nat: (Z.to_nat (fileZ (file p)) < 8)%nat).
+  { apply Nat2Z.inj_lt. rewrite Z2Nat.id; lia. }
+  destruct (lt_dec (Z.to_nat (rankZ (rank p))) 8) as [Hr_dec|]; [|lia].
+  destruct (lt_dec (Z.to_nat (fileZ (file p))) 8) as [Hf_dec|]; [|lia].
+  assert (Hr_eq: @fin8_of_nat (Z.to_nat (rankZ (rank p))) Hr_dec = rank p).
+  { unfold fin8_of_nat.
+    assert (HEq: Z.to_nat (rankZ (rank p)) = proj1_sig (Fin.to_nat (rank p))).
+    { unfold rankZ, fin8_to_nat. rewrite Nat2Z.id. reflexivity. }
+    generalize dependent Hr_dec.
+    rewrite HEq.
+    intro Hr_dec'.
+    replace Hr_dec' with (proj2_sig (Fin.to_nat (rank p))) by (apply proof_irrelevance).
+    apply Fin.of_nat_to_nat_inv. }
+  rewrite Hr_eq.
+  assert (Hf_eq: @fin8_of_nat (Z.to_nat (fileZ (file p))) Hf_dec = file p).
+  { unfold fin8_of_nat.
+    assert (HEqF: Z.to_nat (fileZ (file p)) = proj1_sig (Fin.to_nat (file p))).
+    { unfold fileZ, fin8_to_nat. rewrite Nat2Z.id. reflexivity. }
+    generalize dependent Hf_dec.
+    rewrite HEqF.
+    intro Hf_dec'.
+    replace Hf_dec' with (proj2_sig (Fin.to_nat (file p))) by (apply proof_irrelevance).
+    apply Fin.of_nat_to_nat_inv. }
+  rewrite Hf_eq.
+  unfold mk_pos.
+  destruct (Bool.bool_dec (dark (rank p) (file p)) true) as [E|E].
+  - f_equal. apply position_eq; auto.
+  - exfalso. apply E. apply position_is_dark.
+Qed.
+
 (* Instance for Finite Position *)
 Program Instance Finite_Position : Finite Position := {
   enum := enum_pos
@@ -954,6 +1091,45 @@ Definition diag_jump (from over to : Position) : Prop :=
   (Z.abs (r_to - r_from) = 2) /\
   (Z.abs (f_to - f_from) = 2).
 
+(* Boolean version of diag_jump for executable code *)
+Definition diag_jump_dec (from over to : Position) : bool :=
+  let r_from := rankZ (rank from) in
+  let f_from := fileZ (file from) in
+  let r_over := rankZ (rank over) in
+  let f_over := fileZ (file over) in
+  let r_to := rankZ (rank to) in
+  let f_to := fileZ (file to) in
+  (* Check over is exactly in the middle *)
+  (Z.eqb r_over ((r_from + r_to) / 2)) &&
+  (Z.eqb f_over ((f_from + f_to) / 2)) &&
+  (* Check from and to are distance 2 apart diagonally *)
+  (Z.eqb (Z.abs (r_to - r_from)) 2) &&
+  (Z.eqb (Z.abs (f_to - f_from)) 2).
+
+(* Lemma: diag_jump_dec correctly reflects diag_jump *)
+Lemma diag_jump_dec_correct : forall from over to,
+  diag_jump_dec from over to = true <-> diag_jump from over to.
+Proof.
+  intros from over to.
+  unfold diag_jump_dec, diag_jump.
+  split.
+  - intro H.
+    repeat rewrite andb_true_iff in H.
+    destruct H as [[[H1 H2] H3] H4].
+    repeat split.
+    + apply Z.eqb_eq. exact H1.
+    + apply Z.eqb_eq. exact H2.
+    + apply Z.eqb_eq. exact H3.
+    + apply Z.eqb_eq. exact H4.
+  - intros [H1 [H2 [H3 H4]]].
+    repeat rewrite andb_true_iff.
+    repeat split.
+    + apply Z.eqb_eq. exact H1.
+    + apply Z.eqb_eq. exact H2.
+    + apply Z.eqb_eq. exact H3.
+    + apply Z.eqb_eq. exact H4.
+Qed.
+
 (* Directionality: forward means rank increases for Dark, decreases for Light *)
 Definition forward_of (c : Color) (r1 r2 : Rank) : Prop :=
   match c with
@@ -1030,19 +1206,16 @@ Definition jump_impl (b : Board) (pc : Piece) (from over to : Position) : bool :
     match Color_eq_dec (pc_color opponent) (pc_color pc) with
     | left _ => false
     | right _ =>
-      match pc_kind pc with
-         | Man => if diag_adj_dec from over
-                  then if diag_adj_dec over to
-                       then match pc_color pc with
-                            | Dark => Z.ltb (rankZ (rank from)) (rankZ (rank to))
-                            | Light => Z.ltb (rankZ (rank to)) (rankZ (rank from))
-                            end
-                       else false
-                  else false
-         | King => if diag_adj_dec from over
-                   then if diag_adj_dec over to then true else false
-                   else false
-      end
+      if diag_jump_dec from over to then
+        match pc_kind pc with
+        | Man =>
+          match pc_color pc with
+          | Dark => Z.ltb (rankZ (rank from)) (rankZ (rank to))
+          | Light => Z.ltb (rankZ (rank to)) (rankZ (rank from))
+          end
+        | King => true  (* King can jump in any direction *)
+        end
+      else false
     end
   | _, _ => false
   end.
@@ -1068,11 +1241,11 @@ Proof.
   destruct (occupied b to); [discriminate|].
   destruct (board_get b over) as [opp|]; [|discriminate].
   destruct (Color_eq_dec (pc_color opp) c) as [Heq|Hneq];
-    [simpl in H; discriminate|simpl in H].
-  destruct (diag_adj_dec from over); [|discriminate].
-  destruct (diag_adj_dec over to); [|discriminate].
+    [discriminate|].
+  destruct (diag_jump_dec from over to); [|discriminate].
+  simpl in H.
   unfold forward_of.
-  destruct c; simpl; rewrite Z.ltb_lt in H; lia.
+  destruct c; simpl in H; rewrite Z.ltb_lt in H; lia.
 Qed.
 
 (* ========================================================================= *)
@@ -1156,9 +1329,8 @@ Fixpoint valid_jump_chain_rec (b : Board) (pc : Piece) (from : Position)
     if negb (occupied transient_b to) then
       if occupied_by transient_b (opp (pc_color pc)) over then
         if negb (existsb (position_eqb over) captured_so_far) then
-          (* Check jump geometry *)
-          if (if diag_adj_dec from over then true else false) &&
-             (if diag_adj_dec over to then true else false) then
+          (* Check jump geometry - must be straight diagonal jump *)
+          if diag_jump_dec from over to then
             (* Check directionality for Man *)
             match pc_kind pc with
             | Man =>
@@ -2002,6 +2174,36 @@ Proof.
   simpl.
   (* For Dark, crown head is rank 7 (0-indexed) *)
   (* Position 32 should be at rank 7 *)
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* L-shaped jumps are rejected *)
+Example l_shaped_jump_rejected :
+  match get_position_from_number 9, get_position_from_number 14,
+        get_position_from_number 17 with
+  | Some from, Some over, Some to =>
+    diag_jump_dec from over to = false
+  | _, _, _ => True
+  end.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Straight diagonal jumps are accepted *)
+Example straight_diagonal_jump_accepted :
+  match get_position_from_number 9, get_position_from_number 14,
+        get_position_from_number 18 with
+  | Some from, Some over, Some to =>
+    let rf := rankZ (rank from) in
+    let ff := fileZ (file from) in
+    let rt := rankZ (rank to) in
+    let ft := fileZ (file to) in
+    andb (Z.eqb (Z.abs (rt - rf)) 2) (Z.eqb (Z.abs (ft - ff)) 2)
+  | _, _, _ => false
+  end = true.
+Proof.
   vm_compute.
   reflexivity.
 Qed.
@@ -2944,6 +3146,7 @@ Proof.
            exact man_plus_king.
     + reflexivity.
 Qed.
+
 (* ========================================================================= *)
 (* SECTION 21: METATHEOREMS & IMPLEMENTATION CONTRACTS                      *)
 (* ========================================================================= *)
