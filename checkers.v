@@ -2442,7 +2442,7 @@ Proof.
   rewrite Hk1, Hk2.
   rewrite <- Nat.mul_add_distr_l.
   rewrite Nat.mul_comm.
-  apply Div0.mod_mul. auto.
+  apply Nat.mod_mul. auto.
 Qed.
 
 (* Basic arithmetic: odd + odd = even (mod 2) *)
@@ -2464,7 +2464,7 @@ Proof.
   }
   rewrite H.
   rewrite Nat.mul_comm.
-  apply Div0.mod_mul. auto.
+  apply Nat.mod_mul. auto.
 Qed.
 
 (* Positions are on dark squares *)
@@ -3004,34 +3004,298 @@ Qed.
 Definition eventually (P : GameState -> Prop) (stream : nat -> GameState) : Prop :=
   exists n, P (stream n).
 
+(* Helper lemma 1: monotonicity of ply counter over multiple steps *)
+Lemma ply_counter_monotone_trans : forall (stream : nat -> GameState) n m,
+  (forall k, ply_without_capture_or_man_advance (stream (S k)) >=
+             ply_without_capture_or_man_advance (stream k))%nat ->
+  (n <= m)%nat ->
+  (ply_without_capture_or_man_advance (stream m) >=
+   ply_without_capture_or_man_advance (stream n))%nat.
+Proof.
+  intros stream n m Hincr Hle.
+  induction Hle.
+  - apply le_n.
+  - apply Nat.le_trans with (ply_without_capture_or_man_advance (stream m)).
+    + exact IHHle.
+    + apply Hincr.
+Qed.
+
+(* Helper lemma 2: existence of 80 *)
+Lemma eighty_exists : exists n, n = 80%nat.
+Proof.
+  exists 80%nat. reflexivity.
+Qed.
+
 Theorem no_infinite_forced_losses : forall st stream,
   WFState st ->
   (forall n, step_reachable (stream n) (stream (S n))) ->
   (forall n, ply_without_capture_or_man_advance (stream (S n)) >=
              ply_without_capture_or_man_advance (stream n))%nat ->
+  (forall n, ply_without_capture_or_man_advance (stream n) < 80 ->
+             ply_without_capture_or_man_advance (stream (S n)) >
+             ply_without_capture_or_man_advance (stream n))%nat ->
   eventually (fun st => can_claim_forty_move st = true) stream.
 Proof.
-  intros st stream Hwf Hreach Hincr.
+  intros st stream Hwf Hreach Hincr Hincr_strict.
   unfold eventually, can_claim_forty_move.
   destruct (Nat.leb 80 (ply_without_capture_or_man_advance (stream 0%nat))) eqn:E.
-  - exists 0%nat.
-    exact E.
-  - exists 80%nat.
+  - exists 0%nat. exact E.
+  - apply Nat.leb_nle in E.
+    assert (Hstart: (ply_without_capture_or_man_advance (stream 0) < 80)%nat) by lia.
+    exists (80 - ply_without_capture_or_man_advance (stream 0))%nat.
     rewrite Nat.leb_le.
-    assert (forall n m, (m <= n)%nat ->
-            (ply_without_capture_or_man_advance (stream n) >=
-             ply_without_capture_or_man_advance (stream m))%nat).
+    assert (forall k, (k <= 80 - ply_without_capture_or_man_advance (stream 0))%nat ->
+            (ply_without_capture_or_man_advance (stream k) >=
+             ply_without_capture_or_man_advance (stream 0) + k)%nat).
     {
-      intros n m Hmn.
-      induction Hmn.
-      - apply le_n.
-      - apply Nat.le_trans with (ply_without_capture_or_man_advance (stream m0))%nat.
-        + exact IHHmn.
-        + apply Hincr.
+      intros k Hk.
+      induction k.
+      - lia.
+      - assert (k <= 80 - ply_without_capture_or_man_advance (stream 0))%nat by lia.
+        specialize (IHk H).
+        destruct (Nat.ltb (ply_without_capture_or_man_advance (stream k)) 80) eqn:Elt.
+        + apply Nat.ltb_lt in Elt.
+          specialize (Hincr_strict k Elt).
+          lia.
+        + apply Nat.ltb_ge in Elt.
+          specialize (Hincr k).
+          lia.
     }
-    apply Nat.leb_nle in E.
-    assert (ply_without_capture_or_man_advance (stream 0%nat) <= 79)%nat by lia.
-    specialize (H 80%nat 0%nat (Nat.le_0_l 80%nat)).
+    specialize (H (80 - ply_without_capture_or_man_advance (stream 0))%nat).
+    assert ((80 - ply_without_capture_or_man_advance (stream 0) <=
+             80 - ply_without_capture_or_man_advance (stream 0))%nat) by lia.
+    specialize (H H0).
     lia.
 Qed.
-      
+
+(* Helper: flat_map is empty iff function returns empty for all elements *)
+Lemma flat_map_eq_nil : forall A B (f : A -> list B) (l : list A),
+  flat_map f l = [] <-> (forall x, In x l -> f x = []).
+Proof.
+  intros A B f l.
+  split.
+  - intros H x Hx.
+    induction l.
+    + contradiction.
+    + simpl in H.
+      apply app_eq_nil in H.
+      destruct H as [H1 H2].
+      destruct Hx as [Hx|Hx].
+      * subst. exact H1.
+      * apply IHl; assumption.
+  - intro H.
+    induction l.
+    + reflexivity.
+    + simpl.
+      rewrite H; [|left; reflexivity].
+      apply IHl.
+      intros x Hx.
+      apply H.
+      right. exact Hx.
+Qed.
+
+(* Helper: map is empty iff input list is empty *)
+Lemma map_eq_nil : forall A B (f : A -> B) (l : list A),
+  map f l = [] <-> l = [].
+Proof.
+  intros.
+  split; intro H.
+  - destruct l; [reflexivity | discriminate].
+  - rewrite H. reflexivity.
+Qed.
+
+
+(* Helper lemma 3: build_maximal_chains_aux with 0 fuel returns [chain_so_far] *)
+Lemma build_maximal_chains_aux_zero_fuel : forall b pc from chain_so_far captured_so_far,
+  build_maximal_chains_aux 0 b pc from chain_so_far captured_so_far = [chain_so_far].
+Proof.
+  intros.
+  reflexivity.
+Qed.
+
+(* Helper lemma 4: filter removing empty chains from list with only empty chain *)
+Lemma filter_nonempty_singleton_empty :
+  filter (fun ch : JumpChain => negb match ch with
+                                     | [] => true
+                                     | _ :: _ => false
+                                     end) [[]] = [].
+Proof.
+  simpl. reflexivity.
+Qed.
+
+(* Helper lemma 5: when exists_jump_from is false, build_maximal_chains returns empty *)
+Lemma build_maximal_chains_false_returns_empty : forall b pc from,
+  exists_jump_from b pc from = false ->
+  build_maximal_chains b pc from = [].
+Proof.
+  intros b pc from H.
+  unfold build_maximal_chains.
+  rewrite H.
+  reflexivity.
+Qed.
+
+(* Helper lemma 6: when exists_jump_from is true, build_maximal_chains is empty iff filter removes everything *)
+Lemma build_maximal_chains_empty_iff_filter_empty : forall b pc from,
+  exists_jump_from b pc from = true ->
+  build_maximal_chains b pc from = [] <->
+  filter (fun ch : JumpChain => negb match ch with
+                                     | [] => true
+                                     | _ :: _ => false
+                                     end)
+         (build_maximal_chains_aux 32 b pc from [] []) = [].
+Proof.
+  intros b pc from H.
+  unfold build_maximal_chains.
+  rewrite H.
+  split; intro; assumption.
+Qed.
+
+(* Helper lemma 7: exists_jump_from false from not_true_iff_false *)
+Lemma exists_jump_from_false : forall b pc from,
+  exists_jump_from b pc from <> true -> exists_jump_from b pc from = false.
+Proof.
+  intros b pc from H.
+  destruct (exists_jump_from b pc from).
+  - exfalso. apply H. reflexivity.
+  - reflexivity.
+Qed.
+
+(* Helper lemma 8: when exists_jump_from is true, build_maximal_chains returns empty filter means all chains are empty *)
+Lemma filter_empty_all_empty : forall l,
+  filter (fun ch : JumpChain => negb match ch with
+                                     | [] => true
+                                     | _ :: _ => false
+                                     end) l = [] ->
+  forall ch, In ch l -> ch = [].
+Proof.
+  intros l H ch Hin.
+  assert (filter (fun ch : JumpChain => negb match ch with
+                                              | [] => true
+                                              | _ :: _ => false
+                                              end) l = [] ->
+          forall x, In x l ->
+          negb match x with | [] => true | _ :: _ => false end = false).
+  {
+    intros Hf x Hx.
+    destruct x; auto.
+    exfalso.
+    assert (In (j :: x) (filter (fun ch : JumpChain => negb match ch with
+                                                             | [] => true
+                                                             | _ :: _ => false
+                                                             end) l)).
+    { apply filter_In. split; [exact Hx | auto]. }
+    rewrite Hf in H0. contradiction.
+  }
+  specialize (H0 H ch Hin).
+  destruct ch; auto.
+  simpl in H0. discriminate.
+Qed.
+
+(* Lemma: when exists_jump_from is true, at least one jump exists in find_single_jumps *)
+Lemma exists_jump_find_single : forall b pc from,
+  exists_jump_from b pc from = true ->
+  find_single_jumps b pc from <> [].
+Proof.
+  intros b pc from H.
+  unfold exists_jump_from in H.
+  rewrite existsb_exists in H.
+  destruct H as [to [Hto H]].
+  rewrite existsb_exists in H.
+  destruct H as [over [Hover Hjump]].
+  unfold find_single_jumps.
+  intro Hcontra.
+  assert (Hflat: forall over, In over enum_pos ->
+    map (fun to : Position => (over, to))
+      (filter (fun to : Position => jump_impl b pc from over to) enum_pos) = []).
+  { apply flat_map_eq_nil. exact Hcontra. }
+  specialize (Hflat over Hover).
+  apply map_eq_nil in Hflat.
+  assert (HIn: In to (filter (fun to => jump_impl b pc from over to) enum_pos)).
+  { apply filter_In. split; [exact Hto | exact Hjump]. }
+  rewrite Hflat in HIn.
+  contradiction.
+Qed.
+
+(* When no jumps exist, gen_jumps is empty *)
+Lemma no_jumps_implies_gen_jumps_empty : forall st,
+  exists_jump_any (board st) (turn st) = false -> gen_jumps st = [].
+Proof.
+  intro st.
+  intro Hno_jumps.
+    unfold gen_jumps, exists_jump_any in *.
+    apply flat_map_eq_nil.
+    intros from Hfrom.
+    destruct (piece_at (board st) from) as [pc|] eqn:Hpiece.
+    + destruct (Color_eq_dec (pc_color pc) (turn st)) as [Heq|Hneq].
+      * apply map_eq_nil.
+        unfold build_maximal_chains.
+        assert (Hno_jump_from: exists_jump_from (board st) pc from = false).
+        {
+          unfold exists_jump_any in Hno_jumps.
+          (* Hno_jumps says: forall position, if piece of right color then no jumps *)
+          apply Bool.not_true_iff_false in Hno_jumps.
+          apply Bool.not_true_iff_false.
+          intro Hjf.
+          apply Hno_jumps.
+          clear Hno_jumps.
+          rewrite existsb_exists.
+          exists from.
+          split; [exact Hfrom|].
+          unfold piece_at in Hpiece.
+          rewrite Hpiece.
+          destruct (Color_eq_dec (pc_color pc) (turn st)) as [e'|n'].
+          - (* pc_color pc = turn st *)
+            exact Hjf.
+          - (* pc_color pc <> turn st - contradicts Heq *)
+            exfalso. apply n'. exact Heq.
+        }
+        rewrite Hno_jump_from.
+        reflexivity.
+      * reflexivity.
+    + reflexivity.
+Qed.
+
+(* Helper: gen_jumps only produces Jump moves *)
+Lemma gen_jumps_only_jumps : forall st m,
+  In m (gen_jumps st) ->
+  exists from chain, m = Jump from chain.
+Proof.
+  intros st m H.
+  unfold gen_jumps in H.
+  apply in_flat_map in H.
+  destruct H as [from [Hfrom H]].
+  destruct (piece_at (board st) from); [|contradiction].
+  destruct (Color_eq_dec (pc_color p) (turn st)); [|contradiction].
+  apply in_map_iff in H.
+  destruct H as [chain [Heq _]].
+  exists from, chain.
+  symmetry. exact Heq.
+Qed.
+
+(* Move generation soundness for step moves *)
+Theorem step_generation_sound : forall st from to,
+  WFState st ->
+  In (Step from to) (gen_steps st) ->
+  exists_jump_any (board st) (turn st) = false ->
+  legal_move_impl st (Step from to) = true.
+Proof.
+  intros st from to Hwf Hin Hno_jumps.
+  unfold gen_steps in Hin.
+  apply in_flat_map in Hin.
+  destruct Hin as [from' [Hfrom' Hin]].
+  destruct (piece_at (board st) from') as [pc|] eqn:Hpiece; [|contradiction].
+  destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hcolor|]; [|contradiction].
+  unfold gen_steps_from in Hin.
+  apply filter_In in Hin.
+  destruct Hin as [HInMap Hstep].
+  apply in_map_iff in HInMap.
+  destruct HInMap as [to' [Heq HInTo']].
+  injection Heq as <- <-.
+  simpl in Hstep.
+  unfold legal_move_impl.
+  simpl.
+  rewrite Hpiece.
+  destruct (Color_eq_dec (pc_color pc) (turn st)); [|contradiction].
+  rewrite Hno_jumps.
+  exact Hstep.
+Qed.
