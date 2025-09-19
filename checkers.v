@@ -4533,12 +4533,12 @@ Extract Constant List.length => "List.length".
 Extract Constant List.app => "(@)".
 Extract Constant List.map => "List.map".
 Extract Constant List.filter => "List.filter".
-Extract Constant List.fold_left => "(fun f init l -> List.fold_left f l init)".
-Extract Constant List.fold_right => "List.fold_right".
+Extract Constant List.fold_left => "(fun f l init -> List.fold_left f init l)".
+Extract Constant List.fold_right => "(fun f init l -> List.fold_right f l init)".
 
 (* Map string operations *)
 Extract Inductive string => "string"
-  [ "(String.make 0 ' ')" "(fun c s -> String.make 1 c ^ s)" ]
+  [ "\"\"" "(fun c s -> String.make 1 c ^ s)" ]
   "(fun empty cons s -> if String.length s = 0 then empty ()
     else cons s.[0] (String.sub s 1 (String.length s - 1)))".
 
