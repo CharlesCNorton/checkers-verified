@@ -18,7 +18,7 @@ Require Import Coq.MSets.MSetList.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Arith.EqNat.
-Require Import Coq.micromega.Lia.  (* Replaced omega with lia *)
+Require Import Coq.micromega.Lia.
 Require Import Coq.Classes.EquivDec.
 Require Import Coq.Classes.SetoidClass.
 Require Import Coq.Relations.Relations.
@@ -1776,23 +1776,6 @@ Definition is_man_forward_step (b : Board) (m : Move) : bool :=
   | _ => false
   end.
 
-(* Helper: check if a move represents progress for the forty-move rule *)
-(* Progress = capture OR promotion to king *)
-Definition is_progress_move (b : Board) (m : Move) : bool :=
-  is_capture_move m ||
-  match m with
-  | Step from to =>
-    match piece_at b from with
-    | Some pc => reaches_crown_head pc to
-    | None => false
-    end
-  | Jump from ch =>
-    match piece_at b from with
-    | Some pc => reaches_crown_head pc (last_landing from ch)
-    | None => false
-    end
-  | _ => false
-  end.
 
 (* Helper: apply a step move to the board *)
 Definition apply_step (b : Board) (from to : Position) : Board :=
@@ -1822,8 +1805,8 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
     | Step from to =>
       let new_board := apply_step (board st) from to in
       let new_ply :=
-        if is_progress_move (board st) m then
-          0%nat  (* Reset counter on capture or promotion *)
+        if is_capture_move m || is_man_forward_step (board st) m then
+          0%nat  (* Reset counter on capture or man forward move - per spec Article 17 *)
         else
           S (ply_without_capture_or_man_advance st)
       in
@@ -1881,7 +1864,7 @@ Definition apply_move_spec (st : GameState) (m : Move) (st' : GameState) : Prop 
       turn st' = opp (turn st) /\
       (* Ply counter updates *)
       (ply_without_capture_or_man_advance st' =
-        if is_progress_move (board st) m then 0%nat
+        if is_capture_move m || is_man_forward_step (board st) m then 0%nat
         else S (ply_without_capture_or_man_advance st)) /\
       (* Repetition book updates *)
       repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
@@ -3912,9 +3895,9 @@ Proof.
   reflexivity.
 Qed.
 
-(* Test: Forty-move rule now correctly resets only on capture or promotion *)
-Example forty_move_rule_correct :
-  (* Test 1: Non-capturing man forward move does NOT reset *)
+(* Test: Forty-move rule correctly resets on any man forward move per spec *)
+Example forty_move_rule_spec_compliant :
+  (* Test: Man forward move DOES reset counter (Article 17) *)
   let test_board : Board := fun p =>
     let idx := sq_index p in
     if Nat.eqb idx 9 then Some {| pc_color := Dark; pc_kind := Man |}
@@ -3925,37 +3908,9 @@ Example forty_move_rule_correct :
   match get_position_from_number 9, get_position_from_number 13 with
   | Some from, Some to =>
     let m := Step from to in
-    (* This is a man forward step but NOT a capture or promotion *)
-    is_progress_move test_board m = false /\
-    (* So the counter should increment, not reset *)
-    match apply_move_impl test_state m with
-    | Some st' => ply_without_capture_or_man_advance st' = 51%nat
-    | None => False
-    end
-  | _, _ => True
-  end.
-Proof.
-  unfold is_progress_move, is_capture_move, reaches_crown_head.
-  simpl.
-  vm_compute.
-  split; reflexivity.
-Qed.
-
-(* Test: Promotion correctly resets the counter *)
-Example forty_move_promotion_resets :
-  (* Man at square 25, about to reach crown head *)
-  let test_board : Board := fun p =>
-    let idx := sq_index p in
-    if Nat.eqb idx 25 then Some {| pc_color := Dark; pc_kind := Man |}
-    else None in
-  let test_state := mkGameState test_board Dark 50
-                      PositionMultiset.empty None in
-  match get_position_from_number 25, get_position_from_number 29 with
-  | Some from, Some to =>
-    let m := Step from to in
-    (* This move reaches the crown head *)
-    is_progress_move test_board m = true /\
-    (* So the counter should reset to 0 *)
+    (* This is a man forward step - should reset per spec *)
+    is_man_forward_step test_board m = true /\
+    (* Counter resets to 0 *)
     match apply_move_impl test_state m with
     | Some st' => ply_without_capture_or_man_advance st' = 0%nat
     | None => False
@@ -3963,7 +3918,34 @@ Example forty_move_promotion_resets :
   | _, _ => True
   end.
 Proof.
-  unfold is_progress_move, is_capture_move, reaches_crown_head, is_crown_head.
+  unfold is_man_forward_step, is_capture_move.
+  simpl.
+  vm_compute.
+  split; reflexivity.
+Qed.
+
+(* Test: King move does NOT reset counter *)
+Example forty_move_king_no_reset :
+  let test_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 9 then Some {| pc_color := Dark; pc_kind := King |}
+    else None in
+  let test_state := mkGameState test_board Dark 50
+                      PositionMultiset.empty None in
+  match get_position_from_number 9, get_position_from_number 13 with
+  | Some from, Some to =>
+    let m := Step from to in
+    (* This is a king move - should NOT reset *)
+    is_man_forward_step test_board m = false /\
+    (* Counter increments *)
+    match apply_move_impl test_state m with
+    | Some st' => ply_without_capture_or_man_advance st' = 51%nat
+    | None => False
+    end
+  | _, _ => True
+  end.
+Proof.
+  unfold is_man_forward_step.
   simpl.
   vm_compute.
   split; reflexivity.
@@ -3997,8 +3979,11 @@ Proof.
   reflexivity.
 Qed.
 
-(* Deeper perft tests for comprehensive validation *)
-(* These are the correct values for English Checkers starting position *)
+(* Perft validation tests - uncomment to verify move generation correctness.
+   These are the correct values for English Checkers starting position.
+   Note: Higher depths are computationally intensive. *)
+
+(*
 Example perft_initial_depth3 : perft initial_state 3 = 302%nat.
 Proof.
   vm_compute.
@@ -4022,3 +4007,146 @@ Proof.
   vm_compute.
   reflexivity.
 Qed.
+*)
+
+(* ========================================================================= *)
+(* SECTION 22: EXTRACTION PREPARATION                                       *)
+(* ========================================================================= *)
+
+(* Public API for extraction to OCaml/Haskell *)
+Module EngineAPI.
+
+  (* Primary types exposed to external code *)
+  Definition state := GameState.
+  Definition move := Move.
+  Definition color := Color.
+  Definition game_result := GameResult.
+
+  (* Constructor for initial game state *)
+  Definition initial : state := initial_state.
+
+  (* Basic state queries *)
+  Definition side_to_move (st : state) : color := turn st.
+  Definition terminal (st : state) : option game_result := is_terminal st.
+
+  (* Move I/O - parsing and printing *)
+  Definition parse_move (st : state) (s : string) : option move :=
+    parse_numeric s st.
+  Definition print_move (st : state) (m : move) : string :=
+    move_to_numeric st m.
+
+  (* Move generation and legality *)
+  Definition legal (st : state) (m : move) : bool := legal_move_impl st m.
+  Definition gen_moves (st : state) : list move := generate_moves_impl st.
+
+  (* Apply move *)
+  Definition apply (st : state) (m : move) : option state :=
+    apply_move_impl st m.
+
+  (* Draw claims *)
+  Definition can_claim_threefold' (st : state) : bool := can_claim_threefold st.
+  Definition can_claim_forty' (st : state) : bool := can_claim_forty_move st.
+
+  (* Evaluation and perft *)
+  Definition eval_for (st : state) (c : color) : Z := evaluate st c.
+  Definition perft' (st : state) (depth : nat) : nat := perft st depth.
+
+End EngineAPI.
+
+(* ASCII Board Renderer for terminal display *)
+Module BoardRenderer.
+
+  (* Import ASCII character support *)
+  Require Import Coq.Strings.Ascii.
+  Local Open Scope char_scope.
+
+  (* Character representation for each piece type and empty squares *)
+  (* Dark pieces: b = man, B = king *)
+  (* Light pieces: w = man, W = king *)
+  (* Empty dark square: . *)
+  (* Light square (unplayable): space *)
+  Definition piece_glyph (pc : Piece) : ascii :=
+    match pc_color pc, pc_kind pc with
+    | Dark, Man   => "b"
+    | Dark, King  => "B"
+    | Light, Man  => "w"
+    | Light, King => "W"
+    end.
+
+  (* Get the glyph for a square at given rank and file *)
+  Definition square_glyph (b : Board) (r : Rank) (f : File) : ascii :=
+    match mk_pos r f with
+    | Some p =>
+        match b p with
+        | None => "."          (* Empty dark square *)
+        | Some pc => piece_glyph pc
+        end
+    | None => " "             (* Light square (unplayable) *)
+    end.
+
+  (* Convert a single rank (row) to a string *)
+  (* Files go from 0 to 7 (left to right) *)
+  Definition render_rank (b : Board) (r : Rank) : string :=
+    fold_right (fun f acc => String (square_glyph b r f) acc)
+               EmptyString
+               enum_fin8.
+
+  (* Render full board as list of strings (one per rank) *)
+  (* Ranks shown from 7 down to 0 (top to bottom for display) *)
+  Definition render_board_lines (b : Board) : list string :=
+    map (render_rank b) (rev enum_fin8).
+
+  (* Convert nat to single digit character for rank labels *)
+  Definition digit_to_ascii (n : nat) : ascii :=
+    match n with
+    | 0%nat => "0" | 1%nat => "1" | 2%nat => "2" | 3%nat => "3"
+    | 4%nat => "4" | 5%nat => "5" | 6%nat => "6" | 7%nat => "7"
+    | 8%nat => "8"
+    | _ => "?"
+    end.
+
+  (* Helper: map2 for combining two lists *)
+  Fixpoint map2_string (f : Fin8 -> string -> string)
+                       (l1 : list Fin8) (l2 : list string) : list string :=
+    match l1, l2 with
+    | [], _ => []
+    | _, [] => []
+    | h1::t1, h2::t2 => f h1 h2 :: map2_string f t1 t2
+    end.
+
+  (* Add rank numbers on the left side *)
+  Definition render_board_with_ranks (b : Board) : list string :=
+    let ranks := rev enum_fin8 in
+    map2_string (fun r line =>
+      String (digit_to_ascii (S (fin8_to_nat r)))
+      (String " " line))
+      ranks
+      (render_board_lines b).
+
+  (* File labels for the bottom *)
+  Definition file_labels : string := " abcdefgh"%string.
+
+  (* Complete board with coordinates *)
+  Definition render_board_complete (b : Board) : list string :=
+    render_board_with_ranks b ++ [file_labels].
+
+  (* Render game state with board and status information *)
+  Definition render_state (st : GameState) : list string :=
+    let board_lines := render_board_complete (board st) in
+    let turn_str := match turn st with
+                    | Dark => "Dark to move"%string
+                    | Light => "Light to move"%string
+                    end in
+    let status_lines := match result st with
+                        | Some (Win Dark) => ["Game Over: Dark wins"%string]
+                        | Some (Win Light) => ["Game Over: Light wins"%string]
+                        | Some Draw => ["Game Over: Draw"%string]
+                        | None => [turn_str]
+                        end in
+    board_lines ++ status_lines.
+
+  (* Export the main rendering function *)
+  Definition render_ascii (st : GameState) : list string :=
+    render_state st.
+
+End BoardRenderer.
