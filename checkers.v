@@ -4476,3 +4476,106 @@ Module Validation.
     ) TestPositions.all_tests.
 
 End Validation.
+
+(* ========================================================================= *)
+(* SECTION 26: EXTRACTION TO OCAML                                          *)
+(* ========================================================================= *)
+
+Require Import ExtrOcamlBasic.
+Require Import ExtrOcamlString.
+Require Import ExtrOcamlZInt.
+Require Import ExtrOcamlNatInt.
+
+Extraction Language OCaml.
+
+(* Map Coq nat to OCaml int for efficiency *)
+Extract Inductive nat => "int"
+  [ "0" "(fun x -> x + 1)" ]
+  "(fun zero succ n -> if n = 0 then zero () else succ (n - 1))".
+
+(* Map comparison operations *)
+Extract Constant Nat.add => "(+)".
+Extract Constant Nat.sub => "(fun x y -> max 0 (x - y))".
+Extract Constant Nat.mul => "( * )".
+Extract Constant Nat.div => "(/)".
+Extract Constant Nat.modulo => "(mod)".
+Extract Constant Nat.eqb => "(=)".
+Extract Constant Nat.leb => "(<=)".
+Extract Constant Nat.ltb => "(<)".
+
+(* Map Z operations *)
+Extract Inductive Z => "int"
+  [ "0" "(fun x -> x)" "(fun x -> -x)" ]
+  "(fun zero pos neg z -> if z = 0 then zero () else if z > 0 then pos z else neg (-z))".
+
+Extract Constant Z.add => "(+)".
+Extract Constant Z.sub => "(-)".
+Extract Constant Z.mul => "( * )".
+Extract Constant Z.div => "(/)".
+Extract Constant Z.eqb => "(=)".
+Extract Constant Z.leb => "(<=)".
+Extract Constant Z.ltb => "(<)".
+Extract Constant Z.of_nat => "(fun x -> x)".
+Extract Constant Z.to_nat => "(fun x -> max 0 x)".
+
+(* Map bool operations *)
+Extract Inductive bool => "bool" [ "true" "false" ].
+Extract Constant andb => "(&&)".
+Extract Constant orb => "(||)".
+Extract Constant negb => "not".
+
+(* Map option type *)
+Extract Inductive option => "option" [ "Some" "None" ].
+
+(* Map list operations *)
+Extract Inductive list => "list" [ "[]" "(::)" ].
+Extract Constant List.length => "List.length".
+Extract Constant List.app => "(@)".
+Extract Constant List.map => "List.map".
+Extract Constant List.filter => "List.filter".
+Extract Constant List.fold_left => "(fun f init l -> List.fold_left f l init)".
+Extract Constant List.fold_right => "List.fold_right".
+
+(* Map string operations *)
+Extract Inductive string => "string"
+  [ "(String.make 0 ' ')" "(fun c s -> String.make 1 c ^ s)" ]
+  "(fun empty cons s -> if String.length s = 0 then empty ()
+    else cons s.[0] (String.sub s 1 (String.length s - 1)))".
+
+Extract Inductive ascii => "char"
+  [ "(fun b0 b1 b2 b3 b4 b5 b6 b7 ->
+      Char.chr ((if b0 then 1 else 0) + (if b1 then 2 else 0) +
+                (if b2 then 4 else 0) + (if b3 then 8 else 0) +
+                (if b4 then 16 else 0) + (if b5 then 32 else 0) +
+                (if b6 then 64 else 0) + (if b7 then 128 else 0)))" ]
+  "(fun f c -> let n = Char.code c in
+    f (n land 1 > 0) (n land 2 > 0) (n land 4 > 0) (n land 8 > 0)
+      (n land 16 > 0) (n land 32 > 0) (n land 64 > 0) (n land 128 > 0))".
+
+(* Extract the complete engine API *)
+Recursive Extraction EngineAPI.
+
+(* Extract the board renderer *)
+Recursive Extraction BoardRenderer.
+
+(* Extract game management *)
+Recursive Extraction GameHistory.
+
+(* Extract automated playing *)
+Recursive Extraction AutoPlay.
+
+(* Extract test positions *)
+Recursive Extraction TestPositions.
+
+(* Extract validation framework *)
+Recursive Extraction Validation.
+
+(* Create standalone extraction to file *)
+Extraction "checkers_engine.ml"
+  EngineAPI
+  BoardRenderer
+  GameHistory
+  AutoPlay
+  TestPositions
+  Validation.
+                  
