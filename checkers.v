@@ -4150,3 +4150,329 @@ Module BoardRenderer.
     render_state st.
 
 End BoardRenderer.
+
+(* ========================================================================= *)
+(* SECTION 23: STRING AND I/O UTILITIES                                     *)
+(* ========================================================================= *)
+
+Module StringUtils.
+
+  (* Join a list of strings with newline characters *)
+  Fixpoint join_lines (lines : list string) : string :=
+    match lines with
+    | [] => EmptyString
+    | [line] => line
+    | line :: rest => line ++ String "010"%char (join_lines rest)
+    end.
+
+  (* Join strings with a separator *)
+  Fixpoint join_with_sep (sep : string) (lines : list string) : string :=
+    match lines with
+    | [] => EmptyString
+    | [line] => line
+    | line :: rest => line ++ sep ++ (join_with_sep sep rest)
+    end.
+
+  (* Pad a string to a given length with spaces on the right *)
+  Fixpoint pad_right (s : string) (n : nat) : string :=
+    match n with
+    | O => s
+    | S n' => match s with
+              | EmptyString => String " "%char (pad_right EmptyString n')
+              | String c rest => String c (pad_right rest n')
+              end
+    end.
+
+End StringUtils.
+
+(* Module for formatting game transcripts and move lists *)
+Module GameTranscript.
+
+  (* Format a single move with move number for Dark *)
+  Definition format_move_numbered (move_num : nat) (dark_move : Move) (light_move : option Move)
+                                  (st : GameState) : string :=
+    let num_str := nat_to_string move_num in
+    let dark_str := move_to_numeric st dark_move in
+    match light_move with
+    | Some lm =>
+        let st' := match apply_move_impl st dark_move with
+                   | Some s => s
+                   | None => st  (* Shouldn't happen for legal moves *)
+                   end in
+        let light_str := move_to_numeric st' lm in
+        num_str ++ ". " ++ dark_str ++ " " ++ light_str
+    | None => num_str ++ ". " ++ dark_str
+    end.
+
+  (* Format a complete list of moves *)
+  Fixpoint format_move_list_aux (moves : list Move) (st : GameState) (move_num : nat)
+                                (acc : list string) : list string :=
+    match moves with
+    | [] => rev acc
+    | dark_move :: [] =>
+        (* Odd number of moves - Dark's last move *)
+        rev (format_move_numbered move_num dark_move None st :: acc)
+    | dark_move :: light_move :: rest =>
+        let line := format_move_numbered move_num dark_move (Some light_move) st in
+        let st' := match apply_move_impl st dark_move with
+                   | Some s1 => match apply_move_impl s1 light_move with
+                               | Some s2 => s2
+                               | None => st
+                               end
+                   | None => st
+                   end in
+        format_move_list_aux rest st' (S move_num) (line :: acc)
+    end.
+
+  Definition format_move_list (moves : list Move) (st : GameState) : list string :=
+    format_move_list_aux moves st 1 [].
+
+End GameTranscript.
+
+(* ========================================================================= *)
+(* SECTION 24: GAME MANAGEMENT                                              *)
+(* ========================================================================= *)
+
+(* Module for managing complete games with history *)
+Module GameHistory.
+
+  (* Record to track a complete game *)
+  Record Game := mkGame {
+    game_moves : list Move;           (* List of moves played *)
+    game_states : list GameState;     (* List of resulting states *)
+    game_initial : GameState;         (* Starting position *)
+    game_result : option GameResult   (* Final result if game ended *)
+  }.
+
+  (* Create a new game from initial position *)
+  Definition new_game (initial : GameState) : Game :=
+    mkGame [] [initial] initial None.
+
+  (* Standard new game from starting position *)
+  Definition new_standard_game : Game :=
+    new_game initial_state.
+
+  (* Add a move to the game *)
+  Definition add_move (g : Game) (m : Move) : option Game :=
+    match game_states g with
+    | [] => None  (* No states - shouldn't happen *)
+    | current_state :: _ =>
+        match apply_move_impl current_state m with
+        | Some new_state =>
+            let new_result := is_terminal new_state in
+            Some (mkGame
+              (m :: game_moves g)
+              (new_state :: game_states g)
+              (game_initial g)
+              (match new_result with
+               | Some r => Some r
+               | None => game_result g
+               end))
+        | None => None  (* Invalid move *)
+        end
+    end.
+
+  (* Get current state of the game *)
+  Definition current_state (g : Game) : GameState :=
+    match game_states g with
+    | [] => game_initial g  (* Shouldn't happen *)
+    | st :: _ => st
+    end.
+
+  (* Check if game is finished *)
+  Definition is_finished (g : Game) : bool :=
+    match game_result g with
+    | Some _ => true
+    | None => false
+    end.
+
+  (* Replay a list of moves from initial position *)
+  Fixpoint replay_moves (moves : list Move) (g : Game) : option Game :=
+    match moves with
+    | [] => Some g
+    | m :: rest =>
+        match add_move g m with
+        | Some g' => replay_moves rest g'
+        | None => None
+        end
+    end.
+
+  (* Create a game from a move list *)
+  Definition game_from_moves (initial : GameState) (moves : list Move) : option Game :=
+    replay_moves moves (new_game initial).
+
+  (* Get move count *)
+  Definition move_count (g : Game) : nat :=
+    List.length (game_moves g).
+
+  (* Get the last move played *)
+  Definition last_move (g : Game) : option Move :=
+    match game_moves g with
+    | [] => None
+    | m :: _ => Some m
+    end.
+
+End GameHistory.
+
+(* ========================================================================= *)
+(* SECTION 25: TEST POSITIONS AND AUTOMATED PLAYING                         *)
+(* ========================================================================= *)
+
+(* Rigorous automated playing and testing framework *)
+Module AutoPlay.
+
+  (* Move selection strategies for automated play *)
+  Inductive MoveStrategy :=
+    | FirstLegal      (* Always pick first legal move *)
+    | Random          (* Pick random legal move (requires seed) *)
+    | BestEval        (* Pick move with best evaluation *)
+    | WorstEval       (* Pick move with worst evaluation (for testing) *)
+    | FixedSequence   (* Follow a predetermined sequence *)
+    .
+
+  (* Select a move using FirstLegal strategy *)
+  Definition select_first_legal (st : GameState) : option Move :=
+    match generate_moves_impl st with
+    | [] => None
+    | m :: _ => Some m
+    end.
+
+  (* Select move with best evaluation (simple 1-ply) *)
+  Definition select_best_eval (st : GameState) : option Move :=
+    let moves := generate_moves_impl st in
+    let evaluated := map (fun m =>
+      match apply_move_impl st m with
+      | Some st' => (m, evaluate st' (turn st))
+      | None => (m, -999999%Z)  (* Should not happen for legal moves *)
+      end) moves in
+    match evaluated with
+    | [] => None
+    | pairs =>
+        let best := fold_left (fun acc pair =>
+          let '(m_acc, eval_acc) := acc in
+          let '(m_new, eval_new) := pair in
+          if Z.leb eval_acc eval_new then pair else acc
+        ) pairs (hd (Resign Dark, -999999%Z) pairs) in
+        Some (fst best)
+    end.
+
+  (* Select a move based on strategy *)
+  Definition select_move (strategy : MoveStrategy) (st : GameState) : option Move :=
+    match strategy with
+    | FirstLegal => select_first_legal st
+    | BestEval => select_best_eval st
+    | _ => select_first_legal st  (* Default to first legal for unimplemented *)
+    end.
+
+  (* Play one complete game with given strategies *)
+  Fixpoint play_game_aux (fuel : nat)
+                         (dark_strategy light_strategy : MoveStrategy)
+                         (g : GameHistory.Game) : GameHistory.Game :=
+    match fuel with
+    | O => g  (* Out of fuel - return current game *)
+    | S fuel' =>
+        if GameHistory.is_finished g then g
+        else
+          let current := GameHistory.current_state g in
+          let strategy := if Color_eq_dec (turn current) Dark
+                         then dark_strategy else light_strategy in
+          match select_move strategy current with
+          | Some m =>
+              match GameHistory.add_move g m with
+              | Some g' => play_game_aux fuel' dark_strategy light_strategy g'
+              | None => g  (* Move failed - shouldn't happen *)
+              end
+          | None => g  (* No legal moves - game over *)
+          end
+    end.
+
+  (* Play a complete game from initial position *)
+  Definition play_game (dark_strategy light_strategy : MoveStrategy) : GameHistory.Game :=
+    play_game_aux 1000 dark_strategy light_strategy GameHistory.new_standard_game.
+
+  (* Play game and return just the result *)
+  Definition play_for_result (dark_strategy light_strategy : MoveStrategy) : option GameResult :=
+    GameHistory.game_result (play_game dark_strategy light_strategy).
+
+End AutoPlay.
+
+(* Standard test positions for validation *)
+Module TestPositions.
+
+  (* Create a custom board from piece placements *)
+  Definition empty_board : Board := fun _ => None.
+
+  Definition place_piece (b : Board) (sq : nat) (pc : Piece) : Board :=
+    match get_position_from_number sq with
+    | Some pos => board_set b pos (Some pc)
+    | None => b
+    end.
+
+  (* Test position 1: Simple endgame - one king vs one king *)
+  Definition king_vs_king : GameState :=
+    let b := place_piece (place_piece empty_board 28
+               {| pc_color := Dark; pc_kind := King |})
+               5 {| pc_color := Light; pc_kind := King |} in
+    mkGameState b Dark 0 PositionMultiset.empty None.
+
+  (* Test position 2: Man about to promote *)
+  Definition promotion_test : GameState :=
+    let b := place_piece (place_piece empty_board 25
+               {| pc_color := Dark; pc_kind := Man |})
+               10 {| pc_color := Light; pc_kind := Man |} in
+    mkGameState b Dark 0 PositionMultiset.empty None.
+
+  (* Test position 3: Forced capture situation *)
+  Definition forced_capture_test : GameState :=
+    let b := place_piece (place_piece (place_piece empty_board 14
+               {| pc_color := Dark; pc_kind := Man |})
+               18 {| pc_color := Light; pc_kind := Man |})
+               22 {| pc_color := Light; pc_kind := Man |} in
+    mkGameState b Dark 0 PositionMultiset.empty None.
+
+  (* List of all test positions *)
+  Definition all_tests : list (string * GameState) :=
+    [("King vs King"%string, king_vs_king);
+     ("Promotion Test"%string, promotion_test);
+     ("Forced Capture"%string, forced_capture_test)].
+
+End TestPositions.
+
+(* Validation framework for rigorous testing *)
+Module Validation.
+
+  (* Run auto-play on a test position *)
+  Definition validate_position (name : string) (st : GameState)
+                              (dark_strat light_strat : AutoPlay.MoveStrategy)
+                              : (string * option GameResult) :=
+    let g := GameHistory.new_game st in
+    let final_g := AutoPlay.play_game_aux 100 dark_strat light_strat g in
+    (name, GameHistory.game_result final_g).
+
+  (* Run all test positions with given strategies *)
+  Definition validate_all (dark_strat light_strat : AutoPlay.MoveStrategy)
+                         : list (string * option GameResult) :=
+    map (fun test =>
+      match test with
+      | (name, st) => validate_position name st dark_strat light_strat
+      end
+    ) TestPositions.all_tests.
+
+  (* Test that a game can complete from initial position *)
+  Definition validate_full_game : option GameResult :=
+    AutoPlay.play_for_result AutoPlay.FirstLegal AutoPlay.FirstLegal.
+
+  (* Verify move generation consistency *)
+  Definition verify_move_gen (st : GameState) : bool :=
+    let moves := generate_moves_impl st in
+    forallb (fun m => legal_move_impl st m) moves.
+
+  (* Run validation on all test positions *)
+  Definition run_all_validations : list (string * bool) :=
+    map (fun test =>
+      match test with
+      | (name, st) => (name, verify_move_gen st)
+      end
+    ) TestPositions.all_tests.
+
+End Validation.
