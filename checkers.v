@@ -1550,8 +1550,14 @@ Definition WFState (st : GameState) : Prop :=
   True.
 
 (* Initial game state *)
+(* Important: We pre-seed the repetition book with the initial position
+   so that returning to the starting position counts correctly for threefold repetition *)
 Definition initial_state : GameState :=
-  mkGameState initial_board Dark 0 PositionMultiset.empty None.
+  let init_board := initial_board in
+  let init_turn := Dark in
+  let init_key := (init_board, init_turn) in
+  mkGameState init_board init_turn 0
+    (PositionMultiset.add init_key PositionMultiset.empty) None.
 
 (* Helper: count initial pieces *)
 Lemma initial_dark_count : count_pieces initial_board Dark = 12%nat.
@@ -2260,10 +2266,90 @@ Proof.
   apply le_n.
 Qed.
 
-(* Validation example for Section 18 *)
-Example perft_initial_depth2 : perft initial_state 2 = 49%nat.
+(* Theorem: Initial position is correctly counted in repetition book *)
+Theorem initial_position_counted :
+  count_position_key (key_of_state initial_state) (repetition_book initial_state) = 1%nat.
 Proof.
-  vm_compute.
+  unfold initial_state, key_of_state.
+  simpl.
+  unfold count_position_key, PositionMultiset.multiplicity.
+  unfold PositionMultiset.add.
+  rewrite PositionMultiset.position_key_eqb_refl.
+  unfold PositionMultiset.empty.
+  reflexivity.
+Qed.
+
+(* Theorem: If we return to initial position twice more, we can claim threefold *)
+(* This demonstrates that the fix correctly counts the initial position *)
+Theorem initial_position_threefold :
+  (* If we build a repetition book with the initial key appearing 3 times total *)
+  let init_key := key_of_state initial_state in
+  let book_with_three :=
+    PositionMultiset.add init_key
+      (PositionMultiset.add init_key
+        (PositionMultiset.add init_key PositionMultiset.empty)) in
+  (* Then counting that key gives 3 *)
+  count_position_key init_key book_with_three = 3%nat.
+Proof.
+  (* Unfold let bindings *)
+  unfold count_position_key, PositionMultiset.multiplicity.
+  simpl.
+  (* Unfold the outer add *)
+  unfold PositionMultiset.add at 1.
+  (* The key matches itself *)
+  assert (H1: PositionMultiset.position_key_eqb (key_of_state initial_state)
+                                                 (key_of_state initial_state) = true).
+  { apply PositionMultiset.position_key_eqb_refl. }
+  rewrite H1.
+  (* Now we have S of the inner expression *)
+  simpl.
+  (* Unfold the middle add *)
+  unfold PositionMultiset.add at 1.
+  rewrite H1.
+  simpl.
+  (* Unfold the innermost add *)
+  unfold PositionMultiset.add at 1.
+  rewrite H1.
+  (* Now it's just empty *)
+  unfold PositionMultiset.empty.
+  reflexivity.
+Qed.
+
+(* Corollary: Initial state's setup enables correct threefold detection *)
+Theorem initial_enables_threefold :
+  (* The initial state already has count 1 for its position *)
+  count_position_key (key_of_state initial_state) (repetition_book initial_state) = 1%nat.
+Proof.
+  apply initial_position_counted.
+Qed.
+
+Theorem threefold_works_with_initial : forall st1 st2,
+  key_of_state st1 = key_of_state initial_state ->
+  key_of_state st2 = key_of_state initial_state ->
+  repetition_book st2 =
+    PositionMultiset.add (key_of_state st2)
+      (PositionMultiset.add (key_of_state st1)
+        (repetition_book initial_state)) ->
+  can_claim_threefold st2 = true.
+Proof.
+  intros st1 st2 Hkey1 Hkey2 Hbook.
+  apply repetition_detects_threefold.
+  unfold count_position_key, PositionMultiset.multiplicity.
+  rewrite Hbook.
+  rewrite Hkey2, Hkey1.
+  unfold PositionMultiset.add at 1.
+  assert (Hsame: PositionMultiset.position_key_eqb
+                   (key_of_state initial_state)
+                   (key_of_state initial_state) = true)
+    by apply PositionMultiset.position_key_eqb_refl.
+  rewrite Hsame.
+  unfold PositionMultiset.add at 1.
+  rewrite Hsame.
+  assert (Hcount: count_position_key (key_of_state initial_state)
+                    (repetition_book initial_state) = 1%nat)
+    by apply initial_position_counted.
+  unfold count_position_key, PositionMultiset.multiplicity in Hcount.
+  rewrite Hcount.
   reflexivity.
 Qed.
 
@@ -3801,4 +3887,18 @@ Proof.
     simpl in *.
     subst.
     reflexivity.
+Qed.
+
+(* Final validation example from spec *)
+Example perft_initial_depth1 : perft initial_state 1 = 7%nat.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Validation example for Section 18 *)
+Example perft_initial_depth2 : perft initial_state 2 = 49%nat.
+Proof.
+  vm_compute.
+  reflexivity.
 Qed.
