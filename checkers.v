@@ -1776,6 +1776,24 @@ Definition is_man_forward_step (b : Board) (m : Move) : bool :=
   | _ => false
   end.
 
+(* Helper: check if a move represents progress for the forty-move rule *)
+(* Progress = capture OR promotion to king *)
+Definition is_progress_move (b : Board) (m : Move) : bool :=
+  is_capture_move m ||
+  match m with
+  | Step from to =>
+    match piece_at b from with
+    | Some pc => reaches_crown_head pc to
+    | None => false
+    end
+  | Jump from ch =>
+    match piece_at b from with
+    | Some pc => reaches_crown_head pc (last_landing from ch)
+    | None => false
+    end
+  | _ => false
+  end.
+
 (* Helper: apply a step move to the board *)
 Definition apply_step (b : Board) (from to : Position) : Board :=
   match piece_at b from with
@@ -1804,8 +1822,8 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
     | Step from to =>
       let new_board := apply_step (board st) from to in
       let new_ply :=
-        if is_capture_move m || is_man_forward_step (board st) m then
-          0%nat  (* Reset counter on capture or man advance *)
+        if is_progress_move (board st) m then
+          0%nat  (* Reset counter on capture or promotion *)
         else
           S (ply_without_capture_or_man_advance st)
       in
@@ -1863,7 +1881,7 @@ Definition apply_move_spec (st : GameState) (m : Move) (st' : GameState) : Prop 
       turn st' = opp (turn st) /\
       (* Ply counter updates *)
       (ply_without_capture_or_man_advance st' =
-        if is_man_forward_step (board st) m then 0%nat
+        if is_progress_move (board st) m then 0%nat
         else S (ply_without_capture_or_man_advance st)) /\
       (* Repetition book updates *)
       repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
@@ -3894,6 +3912,63 @@ Example perft_initial_depth1 : perft initial_state 1 = 7%nat.
 Proof.
   vm_compute.
   reflexivity.
+Qed.
+
+(* Test: Forty-move rule now correctly resets only on capture or promotion *)
+Example forty_move_rule_correct :
+  (* Test 1: Non-capturing man forward move does NOT reset *)
+  let test_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 9 then Some {| pc_color := Dark; pc_kind := Man |}
+    else if Nat.eqb idx 22 then Some {| pc_color := Light; pc_kind := Man |}
+    else None in
+  let test_state := mkGameState test_board Dark 50
+                      PositionMultiset.empty None in
+  match get_position_from_number 9, get_position_from_number 13 with
+  | Some from, Some to =>
+    let m := Step from to in
+    (* This is a man forward step but NOT a capture or promotion *)
+    is_progress_move test_board m = false /\
+    (* So the counter should increment, not reset *)
+    match apply_move_impl test_state m with
+    | Some st' => ply_without_capture_or_man_advance st' = 51%nat
+    | None => False
+    end
+  | _, _ => True
+  end.
+Proof.
+  unfold is_progress_move, is_capture_move, reaches_crown_head.
+  simpl.
+  vm_compute.
+  split; reflexivity.
+Qed.
+
+(* Test: Promotion correctly resets the counter *)
+Example forty_move_promotion_resets :
+  (* Man at square 25, about to reach crown head *)
+  let test_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 25 then Some {| pc_color := Dark; pc_kind := Man |}
+    else None in
+  let test_state := mkGameState test_board Dark 50
+                      PositionMultiset.empty None in
+  match get_position_from_number 25, get_position_from_number 29 with
+  | Some from, Some to =>
+    let m := Step from to in
+    (* This move reaches the crown head *)
+    is_progress_move test_board m = true /\
+    (* So the counter should reset to 0 *)
+    match apply_move_impl test_state m with
+    | Some st' => ply_without_capture_or_man_advance st' = 0%nat
+    | None => False
+    end
+  | _, _ => True
+  end.
+Proof.
+  unfold is_progress_move, is_capture_move, reaches_crown_head, is_crown_head.
+  simpl.
+  vm_compute.
+  split; reflexivity.
 Qed.
 
 (* Validation example for Section 18 *)
