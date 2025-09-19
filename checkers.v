@@ -1029,13 +1029,18 @@ Definition sq_index (p : Position) : nat :=
   let col_offset := Nat.div (if Nat.even r then f else S f) 2 in
   S (row_base + col_offset).
   
+(* Constants for board positions to ensure proper extraction *)
+Definition dark_last_square : nat := 12.
+Definition light_first_square : nat := 21.
+Definition light_last_square : nat := 32.
+
 (* Initial board setup *)
 Definition initial_board : Board :=
   fun p =>
     let idx := sq_index p in
-    if Nat.leb idx 12 then
+    if Nat.leb idx dark_last_square then
       Some {| pc_color := Dark; pc_kind := Man |}
-    else if andb (Nat.leb 21 idx) (Nat.leb idx 32) then
+    else if andb (Nat.leb light_first_square idx) (Nat.leb idx light_last_square) then
       Some {| pc_color := Light; pc_kind := Man |}
     else
       None.
@@ -4493,6 +4498,21 @@ Extract Inductive nat => "int"
   [ "0" "(fun x -> x + 1)" ]
   "(fun zero succ n -> if n = 0 then zero () else succ (n - 1))".
 
+(* Extract nat literals directly *)
+Extract Constant Init.Nat.zero => "0".
+Extract Constant Init.Nat.one => "1".
+Extract Constant Init.Nat.two => "2".
+
+(* Force inline extraction for efficiency *)
+Extraction Inline plus mult pred minus.
+Extraction Inline Nat.add Nat.mul Nat.sub Nat.div Nat.modulo.
+Extraction Inline Nat.eqb Nat.leb Nat.ltb.
+
+(* Extract specific constants used in initial_board *)
+Extract Constant dark_last_square => "12".
+Extract Constant light_first_square => "21".
+Extract Constant light_last_square => "32".
+
 (* Map comparison operations *)
 Extract Constant Nat.add => "(+)".
 Extract Constant Nat.sub => "(fun x y -> max 0 (x - y))".
@@ -4538,7 +4558,7 @@ Extract Constant List.fold_right => "(fun f init l -> List.fold_right f l init)"
 
 (* Map string operations *)
 Extract Inductive string => "string"
-  [ "\"\"" "(fun c s -> String.make 1 c ^ s)" ]
+  [ """""""" "(fun c s -> ((String.make 1 c) ^ s))" ]
   "(fun empty cons s -> if String.length s = 0 then empty ()
     else cons s.[0] (String.sub s 1 (String.length s - 1)))".
 
