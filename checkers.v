@@ -3223,9 +3223,7 @@ Definition center_control_value (b : Board) (c : Color) : Z :=
 
 (* Mobility: count legal moves *)
 Definition mobility_value (st : GameState) : Z :=
-  if Color_eq_dec (turn st) (turn st) then
-    Z.of_nat (List.length (generate_moves_impl st))
-  else 0.
+  Z.of_nat (List.length (generate_moves_impl st)).
 
 (* Tempo bonus: whose turn it is *)
 Definition tempo_value (st : GameState) (c : Color) : Z :=
@@ -3971,8 +3969,55 @@ Proof.
   split; reflexivity.
 Qed.
 
+(* Test: Mobility value fix - no longer has redundant self-comparison *)
+Example mobility_value_simplified :
+  (* mobility_value now directly returns the move count *)
+  let test_st := initial_state in
+  mobility_value test_st = Z.of_nat (List.length (generate_moves_impl test_st)).
+Proof.
+  reflexivity.
+Qed.
+
+(* Test: Evaluate function still correctly uses mobility *)
+Example evaluate_uses_mobility_correctly :
+  let test_st := initial_state in
+  (* For the side to move (Dark), mobility is positive *)
+  let moves := List.length (generate_moves_impl test_st) in
+  moves = 7%nat /\  (* Initial position has 7 moves *)
+  mobility_value test_st = Z.of_nat 7.
+Proof.
+  vm_compute.
+  split; reflexivity.
+Qed.
+
 (* Validation example for Section 18 *)
 Example perft_initial_depth2 : perft initial_state 2 = 49%nat.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+(* Deeper perft tests for comprehensive validation *)
+(* These are the correct values for English Checkers starting position *)
+Example perft_initial_depth3 : perft initial_state 3 = 302%nat.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+Example perft_initial_depth4 : perft initial_state 4 = 1469%nat.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+Example perft_initial_depth5 : perft initial_state 5 = 7361%nat.
+Proof.
+  vm_compute.
+  reflexivity.
+Qed.
+
+Example perft_initial_depth6 : perft initial_state 6 = 36768%nat.
 Proof.
   vm_compute.
   reflexivity.
