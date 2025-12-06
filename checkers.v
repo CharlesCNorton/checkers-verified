@@ -2443,81 +2443,89 @@ Definition apply_opening_move (st : GameState) (from_sq to_sq : nat) : option Ga
   | _, _ => None
   end.
 
-(* Apply a three-move opening ballot *)
-Definition apply_opening_ballot (st : GameState) (op : Opening) : option GameState :=
-  match op with
-  | Opening11_15 =>
-    (* Dark: 11-15, Light: 23-19, Dark: 8-11 *)
-    match apply_opening_move st 11 15 with
-    | Some st1 => match apply_opening_move st1 23 19 with
-                  | Some st2 => apply_opening_move st2 8 11
-                  | None => None
-                  end
-    | None => None
+(* ---- Generalized Move Sequence Infrastructure ---- *)
+
+(* PDN move representation: step (from-to) or jump (from x over x to) *)
+Inductive PDNMove :=
+| PDN_Step : nat -> nat -> PDNMove
+| PDN_Jump : nat -> nat -> nat -> PDNMove.
+
+(* Apply a single PDN move to a game state *)
+Definition apply_pdn_move (st : GameState) (m : PDNMove) : option GameState :=
+  match m with
+  | PDN_Step from_sq to_sq =>
+    apply_opening_move st from_sq to_sq
+  | PDN_Jump from_sq over_sq to_sq =>
+    match get_position_from_number from_sq,
+          get_position_from_number over_sq,
+          get_position_from_number to_sq with
+    | Some from, Some over, Some to =>
+      let link := existT (fun _ => Position) over to in
+      let jump := Jump from [link] in
+      if legal_move_impl st jump then
+        apply_move_impl st jump
+      else
+        None
+    | _, _, _ => None
     end
-  | Opening12_16 =>
-    (* Dark: 12-16, Light: 24-20, Dark: 8-12 *)
-    match apply_opening_move st 12 16 with
-    | Some st1 => match apply_opening_move st1 24 20 with
-                  | Some st2 => apply_opening_move st2 8 12
-                  | None => None
-                  end
-    | None => None
-    end
-  | Opening9_13 =>
-    (* Dark: 9-13, Light: 22-18, Dark: 5-9 *)
-    match apply_opening_move st 9 13 with
-    | Some st1 => match apply_opening_move st1 22 18 with
-                  | Some st2 => apply_opening_move st2 5 9
-                  | None => None
-                  end
-    | None => None
-    end
-  | Opening9_14 =>
-    (* Dark: 9-14, Light: 22-17, Dark: 5-9 *)
-    match apply_opening_move st 9 14 with
-    | Some st1 => match apply_opening_move st1 22 17 with
-                  | Some st2 => apply_opening_move st2 5 9
-                  | None => None
-                  end
-    | None => None
-    end
-  | Opening10_14 =>
-    (* Dark: 10-14, Light: 22-17, Dark: 6-10 *)
-    match apply_opening_move st 10 14 with
-    | Some st1 => match apply_opening_move st1 22 17 with
-                  | Some st2 => apply_opening_move st2 6 10
-                  | None => None
-                  end
-    | None => None
-    end
-  | Opening10_15 =>
-    (* Dark: 10-15, Light: 22-18, Dark: 15-22 (capture!) *)
-    match apply_opening_move st 10 15 with
-    | Some st1 => match apply_opening_move st1 22 18 with
-                  | Some st2 =>
-                    (* This is actually a capture: 15x22 *)
-                    match get_position_from_number 15, get_position_from_number 18,
-                          get_position_from_number 22 with
-                    | Some from, Some over, Some to =>
-                      let link := existT (fun _ => Position) over to in
-                      apply_move_impl st2 (Jump from [link])
-                    | _, _, _ => None
-                    end
-                  | None => None
-                  end
-    | None => None
-    end
-  | Opening11_16 =>
-    (* Dark: 11-16, Light: 24-20, Dark: 8-11 *)
-    match apply_opening_move st 11 16 with
-    | Some st1 => match apply_opening_move st1 24 20 with
-                  | Some st2 => apply_opening_move st2 8 11
-                  | None => None
-                  end
+  end.
+
+(* Apply a sequence of PDN moves (monadic fold) *)
+Fixpoint apply_pdn_moves (st : GameState) (moves : list PDNMove) : option GameState :=
+  match moves with
+  | [] => Some st
+  | m :: rest =>
+    match apply_pdn_move st m with
+    | Some st' => apply_pdn_moves st' rest
     | None => None
     end
   end.
+
+(* Convert Opening to its move sequence *)
+Definition opening_to_moves (op : Opening) : list PDNMove :=
+  match op with
+  | Opening11_15 => [PDN_Step 11 15; PDN_Step 23 19; PDN_Step 8 11]
+  | Opening12_16 => [PDN_Step 12 16; PDN_Step 24 20; PDN_Step 8 12]
+  | Opening9_13  => [PDN_Step 9 13;  PDN_Step 22 18; PDN_Step 5 9]
+  | Opening9_14  => [PDN_Step 9 14;  PDN_Step 22 17; PDN_Step 5 9]
+  | Opening10_14 => [PDN_Step 10 14; PDN_Step 22 17; PDN_Step 6 10]
+  | Opening10_15 => [PDN_Step 10 15; PDN_Step 22 18; PDN_Jump 15 18 22]
+  | Opening11_16 => [PDN_Step 11 16; PDN_Step 24 20; PDN_Step 8 11]
+  end.
+
+(* Apply a three-move opening ballot *)
+Definition apply_opening_ballot (st : GameState) (op : Opening) : option GameState :=
+  apply_pdn_moves st (opening_to_moves op).
+
+(* ---- Opening Ballot Validation ---- *)
+
+(* Helper to test opening application *)
+Definition test_opening (op : Opening) : bool :=
+  match apply_opening_ballot initial_state op with
+  | Some _ => true
+  | None => false
+  end.
+
+(* All standard openings should be applicable from initial position *)
+Example all_openings_valid :
+  andb (test_opening Opening11_15)
+  (andb (test_opening Opening12_16)
+  (andb (test_opening Opening9_13)
+  (andb (test_opening Opening9_14)
+  (andb (test_opening Opening10_14)
+  (andb (test_opening Opening10_15)
+        (test_opening Opening11_16)))))) = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: Opening10_15 correctly handles the capture move *)
+Example opening_10_15_has_capture :
+  match apply_opening_ballot initial_state Opening10_15 with
+  | Some st =>
+    (* After the opening, the piece count should reflect the capture *)
+    (count_pieces (board st) Dark + count_pieces (board st) Light < 24)%nat
+  | None => False
+  end.
+Proof. vm_compute. reflexivity. Qed.
 
 (* ========================================================================= *)
 (* SECTION 18: VALIDATION FRAMEWORK & REPETITION KEYS                       *)
@@ -2808,6 +2816,46 @@ Proof.
   reflexivity.
 Qed.
 
+(* ---- PDN Parse Error Types ---- *)
+(* Structured error handling for PDN notation parsing *)
+Inductive ParseError :=
+| ParseError_EmptyInput : ParseError
+| ParseError_InvalidCharacter : ascii -> ParseError
+| ParseError_InvalidSquareNumber : nat -> ParseError
+| ParseError_SquareOutOfRange : nat -> ParseError
+| ParseError_InvalidJumpGeometry : nat -> nat -> ParseError
+| ParseError_MalformedNotation : string -> ParseError
+| ParseError_UnexpectedEnd : ParseError.
+
+(* Result type for parsing operations *)
+Inductive ParseResult (A : Type) :=
+| ParseOk : A -> ParseResult A
+| ParseErr : ParseError -> ParseResult A.
+
+Arguments ParseOk {A}.
+Arguments ParseErr {A}.
+
+(* Monadic bind for ParseResult *)
+Definition parse_bind {A B : Type} (r : ParseResult A) (f : A -> ParseResult B) : ParseResult B :=
+  match r with
+  | ParseOk a => f a
+  | ParseErr e => ParseErr e
+  end.
+
+(* Lift option to ParseResult with error *)
+Definition option_to_result {A : Type} (o : option A) (err : ParseError) : ParseResult A :=
+  match o with
+  | Some a => ParseOk a
+  | None => ParseErr err
+  end.
+
+(* Convert ParseResult back to option (for backwards compatibility) *)
+Definition result_to_option {A : Type} (r : ParseResult A) : option A :=
+  match r with
+  | ParseOk a => Some a
+  | ParseErr _ => None
+  end.
+
 (* Helper: parse a digit character to nat *)
 Definition digit_of_ascii (c : ascii) : option nat :=
   let n := Ascii.nat_of_ascii c in
@@ -2832,6 +2880,33 @@ Definition parse_nat (s : string) : option nat :=
   | EmptyString => None
   | _ => parse_nat_aux s 0
   end.
+
+(* Parsing with structured errors *)
+Fixpoint parse_nat_aux_result (s : string) (acc : nat) : ParseResult nat :=
+  match s with
+  | EmptyString => ParseOk acc
+  | String c rest =>
+    match digit_of_ascii c with
+    | Some d => parse_nat_aux_result rest (acc * 10 + d)
+    | None => ParseErr (ParseError_InvalidCharacter c)
+    end
+  end.
+
+Definition parse_nat_result (s : string) : ParseResult nat :=
+  match s with
+  | EmptyString => ParseErr ParseError_EmptyInput
+  | _ => parse_nat_aux_result s 0
+  end.
+
+(* Position lookup with error reporting *)
+Definition get_position_from_number_result (n : nat) : ParseResult Position :=
+  if andb (Nat.leb 1 n) (Nat.leb n 32) then
+    match find (fun p => Nat.eqb (sq_index p) n) enum_pos with
+    | Some pos => ParseOk pos
+    | None => ParseErr (ParseError_InvalidSquareNumber n)
+    end
+  else
+    ParseErr (ParseError_SquareOutOfRange n).
 
 (* Helper: split string at first occurrence of separator *)
 Fixpoint split_at_char (s : string) (sep : ascii) : (string * option string) :=
@@ -2910,6 +2985,51 @@ Fixpoint parse_jump_chain_aux (from : Position) (rest : string) (acc : JumpChain
 Definition parse_jump_chain (from : Position) (rest : string) : option JumpChain :=
   parse_jump_chain_aux from rest [] 32.  (* Max 32 jumps should be enough *)
 
+(* find_over_position with structured errors *)
+Definition find_over_position_result (from_sq to_sq : nat) (from to : Position) : ParseResult Position :=
+  let r_from := rankZ (rank from) in
+  let f_from := fileZ (file from) in
+  let r_to := rankZ (rank to) in
+  let f_to := fileZ (file to) in
+  if andb (Z.eqb (Z.abs (r_to - r_from)) 2) (Z.eqb (Z.abs (f_to - f_from)) 2) then
+    let r_mid := (r_from + r_to) / 2 in
+    let f_mid := (f_from + f_to) / 2 in
+    if andb (andb (0 <=? r_mid) (r_mid <? 8)) (andb (0 <=? f_mid) (f_mid <? 8)) then
+      match Z.to_nat r_mid, Z.to_nat f_mid with
+      | r_nat, f_nat =>
+        match lt_dec r_nat 8, lt_dec f_nat 8 with
+        | left Hr, left Hf =>
+          option_to_result (mk_pos (fin8_of_nat Hr) (fin8_of_nat Hf))
+                           (ParseError_InvalidJumpGeometry from_sq to_sq)
+        | _, _ => ParseErr (ParseError_InvalidJumpGeometry from_sq to_sq)
+        end
+      end
+    else ParseErr (ParseError_InvalidJumpGeometry from_sq to_sq)
+  else ParseErr (ParseError_InvalidJumpGeometry from_sq to_sq).
+
+(* Jump chain parser with structured errors *)
+Fixpoint parse_jump_chain_aux_result (from : Position) (from_sq : nat) (rest : string)
+                                      (acc : JumpChain) (fuel : nat) : ParseResult JumpChain :=
+  match fuel with
+  | O => ParseErr ParseError_UnexpectedEnd
+  | S fuel' =>
+    match split_at_char rest (Ascii.ascii_of_nat 120) with
+    | (to_str, maybe_rest) =>
+      parse_bind (parse_nat_result to_str) (fun to_num =>
+      parse_bind (get_position_from_number_result to_num) (fun to_pos =>
+      parse_bind (find_over_position_result from_sq to_num from to_pos) (fun over =>
+        let link := existT (fun _ => Position) over to_pos in
+        let new_chain := acc ++ [link] in
+        match maybe_rest with
+        | Some more => parse_jump_chain_aux_result to_pos to_num more new_chain fuel'
+        | None => ParseOk new_chain
+        end)))
+    end
+  end.
+
+Definition parse_jump_chain_result (from : Position) (from_sq : nat) (rest : string) : ParseResult JumpChain :=
+  parse_jump_chain_aux_result from from_sq rest [] 32.
+
 (* Parse a move from PDN notation *)
 Definition parse_numeric (s : string) (st : GameState) : option Move :=
   (* Check for special moves first *)
@@ -2958,6 +3078,43 @@ Definition parse_numeric (s : string) (st : GameState) : option Move :=
       | None => None
       end
     end.
+
+(* parse_numeric with structured error reporting *)
+Definition parse_numeric_result (s : string) (st : GameState) : ParseResult Move :=
+  if String.eqb s ""%string then
+    ParseErr ParseError_EmptyInput
+  else if String.eqb s "Draw"%string then
+    ParseOk AgreeDraw
+  else if String.eqb s "Dark resigns"%string then
+    ParseOk (Resign Dark)
+  else if String.eqb s "Light resigns"%string then
+    ParseOk (Resign Light)
+  else
+    let dash := Ascii.ascii_of_nat 45 in
+    let x_char := Ascii.ascii_of_nat 120 in
+    let (before_dash, after_dash) := split_at_char s dash in
+    match after_dash with
+    | Some rest =>
+      parse_bind (parse_nat_result before_dash) (fun from_num =>
+      parse_bind (parse_nat_result rest) (fun to_num =>
+      parse_bind (get_position_from_number_result from_num) (fun from =>
+      parse_bind (get_position_from_number_result to_num) (fun to =>
+        ParseOk (Step from to)))))
+    | None =>
+      let (before_x, after_x) := split_at_char s x_char in
+      match after_x with
+      | Some rest =>
+        parse_bind (parse_nat_result before_x) (fun from_num =>
+        parse_bind (get_position_from_number_result from_num) (fun from =>
+        parse_bind (parse_jump_chain_result from from_num rest) (fun chain =>
+          ParseOk (Jump from chain))))
+      | None => ParseErr (ParseError_MalformedNotation s)
+      end
+    end.
+
+(* Option-returning variant using result_to_option *)
+Definition parse_numeric' (s : string) (st : GameState) : option Move :=
+  result_to_option (parse_numeric_result s st).
 
 Lemma nat_to_string_parse_nat_small : forall n,
   (n <= 32)%nat ->
@@ -3114,6 +3271,55 @@ Example parse_print_draw : forall st,
 Proof.
   intro st. simpl. reflexivity.
 Qed.
+
+(* ---- Error Handling Validation Tests ---- *)
+
+(* Test: Empty input returns EmptyInput error *)
+Example parse_error_empty_input :
+  parse_numeric_result ""%string initial_state = ParseErr ParseError_EmptyInput.
+Proof. reflexivity. Qed.
+
+(* Test: Invalid square number returns proper error *)
+Example parse_error_invalid_square :
+  parse_numeric_result "99-14"%string initial_state =
+    ParseErr (ParseError_SquareOutOfRange 99).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: Invalid character in number returns proper error *)
+Example parse_error_invalid_char :
+  parse_numeric_result "9a-14"%string initial_state =
+    ParseErr (ParseError_InvalidCharacter "a"%char).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: Malformed notation returns proper error *)
+Example parse_error_malformed :
+  parse_numeric_result "garbage"%string initial_state =
+    ParseErr (ParseError_MalformedNotation "garbage"%string).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: Invalid jump geometry returns proper error *)
+Example parse_error_invalid_jump :
+  parse_numeric_result "9x10"%string initial_state =
+    ParseErr (ParseError_InvalidJumpGeometry 9 10).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: Successful parse returns ParseOk *)
+Example parse_result_success_step :
+  match parse_numeric_result "9-14"%string initial_state with
+  | ParseOk (Step _ _) => true
+  | _ => false
+  end = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(* Test: result_to_option converts correctly *)
+Example parse_result_to_option_ok :
+  result_to_option (parse_numeric_result "9-14"%string initial_state) =
+  parse_numeric "9-14"%string initial_state.
+Proof. vm_compute. reflexivity. Qed.
+
+Example parse_result_to_option_err :
+  result_to_option (parse_numeric_result ""%string initial_state) = None.
+Proof. reflexivity. Qed.
 
 (* Lemma: parse_nat correctly inverts nat_to_string for numbers 1-32 *)
 Lemma parse_nat_nat_to_string_inverse : forall n,
