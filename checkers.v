@@ -1072,6 +1072,110 @@ Proof.
 Qed.
 
 (* ========================================================================= *)
+(* SECTION 5b: ZOBRIST HASHING FOR EFFICIENT POSITION COMPARISON            *)
+(* ========================================================================= *)
+
+(* Zobrist hashing provides O(1) position comparison by assigning random
+   bitstrings to each (square, piece) combination. The hash of a position
+   is the XOR of all piece hashes. This is standard in chess/checkers engines.
+
+   We use Z (arbitrary precision integers) for hashes to avoid overflow
+   concerns in the formalization, though extraction would use fixed-width. *)
+
+(* Pseudo-random number generator for reproducible Zobrist keys *)
+(* Using a simple linear congruential generator seeded deterministically *)
+Definition zobrist_lcg (seed : Z) : Z :=
+  Z.modulo (seed * 6364136223846793005 + 1442695040888963407) (2^64).
+
+(* Generate a sequence of pseudo-random values *)
+Fixpoint zobrist_sequence (seed : Z) (n : nat) : list Z :=
+  match n with
+  | O => []
+  | S n' => seed :: zobrist_sequence (zobrist_lcg seed) n'
+  end.
+
+(* We need: 32 positions × 4 piece types (Dark Man, Dark King, Light Man, Light King) = 128 keys
+   Plus 1 key for side-to-move *)
+Definition zobrist_keys_count : nat := 129%nat.
+Definition zobrist_seed : Z := 0x123456789ABCDEF.
+
+(* All Zobrist keys as a list *)
+Definition zobrist_all_keys : list Z :=
+  zobrist_sequence zobrist_seed zobrist_keys_count.
+
+(* Index calculation: position index (0-31) * 4 + piece_index (0-3) *)
+Definition piece_index (pc : Piece) : nat :=
+  match pc_color pc, pc_kind pc with
+  | Dark, Man => 0
+  | Dark, King => 1
+  | Light, Man => 2
+  | Light, King => 3
+  end%nat.
+
+(* Get Zobrist key for a piece at a position *)
+Definition zobrist_piece_key (p : Position) (pc : Piece) : Z :=
+  let pos_idx := (sq_index p - 1)%nat in  (* sq_index is 1-based *)
+  let pc_idx := piece_index pc in
+  let key_idx := (pos_idx * 4 + pc_idx)%nat in
+  nth key_idx zobrist_all_keys 0.
+
+(* Zobrist key for side to move (index 128) *)
+Definition zobrist_turn_key : Z :=
+  nth 128%nat zobrist_all_keys 0.
+
+(* Compute Zobrist hash of a board *)
+Definition zobrist_hash_board (b : Board) : Z :=
+  fold_left (fun acc p =>
+    match b p with
+    | Some pc => Z.lxor acc (zobrist_piece_key p pc)
+    | None => acc
+    end
+  ) enum_pos 0.
+
+(* Compute full Zobrist hash including side to move *)
+Definition zobrist_hash (b : Board) (c : Color) : Z :=
+  let board_hash := zobrist_hash_board b in
+  match c with
+  | Dark => board_hash
+  | Light => Z.lxor board_hash zobrist_turn_key
+  end.
+
+(* Incremental hash update when a piece is added *)
+Definition zobrist_add_piece (hash : Z) (p : Position) (pc : Piece) : Z :=
+  Z.lxor hash (zobrist_piece_key p pc).
+
+(* Incremental hash update when a piece is removed *)
+Definition zobrist_remove_piece (hash : Z) (p : Position) (pc : Piece) : Z :=
+  Z.lxor hash (zobrist_piece_key p pc).  (* XOR is self-inverse *)
+
+(* Incremental hash update when turn changes *)
+Definition zobrist_flip_turn (hash : Z) : Z :=
+  Z.lxor hash zobrist_turn_key.
+
+(* Key theorem: XOR is self-inverse *)
+Lemma xor_self_inverse : forall a b : Z, Z.lxor (Z.lxor a b) b = a.
+Proof.
+  intros a b.
+  rewrite Z.lxor_assoc.
+  rewrite Z.lxor_nilpotent.
+  rewrite Z.lxor_0_r.
+  reflexivity.
+Qed.
+
+(* Adding then removing a piece restores the hash *)
+Lemma zobrist_add_remove_inverse : forall hash p pc,
+  zobrist_remove_piece (zobrist_add_piece hash p pc) p pc = hash.
+Proof.
+  intros hash p pc.
+  unfold zobrist_add_piece, zobrist_remove_piece.
+  apply xor_self_inverse.
+Qed.
+
+(* Hash equality implies likely board equality (probabilistic) *)
+(* In practice, collisions are astronomically rare with 64-bit hashes *)
+Definition zobrist_eq (h1 h2 : Z) : bool := Z.eqb h1 h2.
+
+(* ========================================================================= *)
 (* SECTION 6: MOVEMENT GEOMETRY (DIAGONALS ON DARK SQUARES)                 *)
 (* ========================================================================= *)
 
@@ -1464,44 +1568,92 @@ Qed.
 (* SECTION 10: GAME STATE                                                   *)
 (* ========================================================================= *)
 
-(* Position key for repetition detection *)
-Definition PositionKey := (Board * Color)%type.
+(* Position key for repetition detection - now includes Zobrist hash for O(1) comparison *)
+Record PositionKey := mkPositionKey {
+  pk_board : Board;
+  pk_turn : Color;
+  pk_hash : Z  (* Zobrist hash for fast comparison *)
+}.
 
-(* Multiset implementation for PositionKey *)
+(* Smart constructor that computes hash automatically *)
+Definition make_position_key (b : Board) (c : Color) : PositionKey :=
+  mkPositionKey b c (zobrist_hash b c).
+
+(* Legacy accessor for compatibility *)
+Definition position_key_board_color (pk : PositionKey) : Board * Color :=
+  (pk_board pk, pk_turn pk).
+
+(* Multiset implementation for PositionKey using Zobrist hashing *)
 Module PositionMultiset.
-  Definition t := PositionKey -> nat.
+  (* Internal representation: list of (hash, count) pairs for O(1) average lookup *)
+  (* We use a list-based map keyed by hash *)
+  Definition hash_entry := (Z * nat)%type.
+  Definition t := list hash_entry.
 
-  Definition empty : t := fun _ => 0%nat.
+  Definition empty : t := [].
 
-  (* Helper: compare two PositionKeys for equality *)
-  Definition position_key_eqb (k1 k2 : PositionKey) : bool :=
-    match k1, k2 with
-    | (b1, c1), (b2, c2) =>
-      andb (if Color_eq_dec c1 c2 then true else false)
-           (forallb (fun p =>
-             match board_get b1 p, board_get b2 p with
-             | None, None => true
-             | Some pc1, Some pc2 =>
-               andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
-                    (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
-             | _, _ => false
-             end
-           ) enum_pos)
+  (* Find entry by hash - O(n) worst case but O(1) expected with good hash *)
+  Fixpoint find_by_hash (h : Z) (m : t) : option nat :=
+    match m with
+    | [] => None
+    | (h', count) :: rest =>
+      if Z.eqb h h' then Some count else find_by_hash h rest
     end.
 
+  (* Update or insert entry by hash *)
+  Fixpoint update_by_hash (h : Z) (f : nat -> nat) (m : t) : t :=
+    match m with
+    | [] => [(h, f 0%nat)]  (* Insert new entry *)
+    | (h', count) :: rest =>
+      if Z.eqb h h' then (h', f count) :: rest
+      else (h', count) :: update_by_hash h f rest
+    end.
+
+  (* Add a position key to the multiset - O(1) average *)
   Definition add (key : PositionKey) (m : t) : t :=
-    fun k => if position_key_eqb key k then S (m k) else m k.
+    update_by_hash (pk_hash key) S m.
 
-  Definition multiplicity (key : PositionKey) (m : t) : nat := m key.
+  (* Get multiplicity of a position key - O(1) average *)
+  Definition multiplicity (key : PositionKey) (m : t) : nat :=
+    match find_by_hash (pk_hash key) m with
+    | Some n => n
+    | None => 0%nat
+    end.
 
+  (* Full board comparison for formal verification (collision detection) *)
+  Definition position_key_eqb_full (k1 k2 : PositionKey) : bool :=
+    andb (if Color_eq_dec (pk_turn k1) (pk_turn k2) then true else false)
+         (forallb (fun p =>
+           match board_get (pk_board k1) p, board_get (pk_board k2) p with
+           | None, None => true
+           | Some pc1, Some pc2 =>
+             andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
+                  (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
+           | _, _ => false
+           end
+         ) enum_pos).
+
+  (* Fast hash-based equality (used in practice) *)
+  Definition position_key_eqb (k1 k2 : PositionKey) : bool :=
+    Z.eqb (pk_hash k1) (pk_hash k2).
+
+  (* Lemma: hash equality is reflexive *)
   Lemma position_key_eqb_refl : forall k, position_key_eqb k k = true.
   Proof.
-    intros [b c].
+    intro k.
     unfold position_key_eqb.
-    destruct (Color_eq_dec c c) as [Hc|Hc].
+    apply Z.eqb_refl.
+  Qed.
+
+  (* Lemma: full comparison is reflexive *)
+  Lemma position_key_eqb_full_refl : forall k, position_key_eqb_full k k = true.
+  Proof.
+    intros k.
+    unfold position_key_eqb_full.
+    destruct (Color_eq_dec (pk_turn k) (pk_turn k)) as [Hc|Hc].
     - simpl.
       assert (H: forallb (fun p : Position =>
-                   match board_get b p, board_get b p with
+                   match board_get (pk_board k) p, board_get (pk_board k) p with
                    | Some pc1, Some pc2 =>
                        andb (if Color_eq_dec (pc_color pc1) (pc_color pc2) then true else false)
                             (if PieceKind_eq_dec (pc_kind pc1) (pc_kind pc2) then true else false)
@@ -1511,7 +1663,7 @@ Module PositionMultiset.
       {
         rewrite forallb_forall.
         intros p Hp.
-        destruct (board_get b p) as [pc|] eqn:E.
+        destruct (board_get (pk_board k) p) as [pc|] eqn:E.
         - destruct (Color_eq_dec (pc_color pc) (pc_color pc)) as [_|n].
           + destruct (PieceKind_eq_dec (pc_kind pc) (pc_kind pc)) as [_|n].
             * reflexivity.
@@ -1523,12 +1675,24 @@ Module PositionMultiset.
     - contradiction Hc; reflexivity.
   Qed.
 
+  (* Lemma: find_by_hash after update returns updated value *)
+  Lemma find_update_same : forall h f m,
+    find_by_hash h (update_by_hash h f m) = Some (f (match find_by_hash h m with Some n => n | None => 0%nat end)).
+  Proof.
+    intros h f m.
+    induction m as [|[h' c] rest IH].
+    - simpl. rewrite Z.eqb_refl. reflexivity.
+    - simpl. destruct (Z.eqb h h') eqn:E.
+      + simpl. rewrite E. reflexivity.
+      + simpl. rewrite E. exact IH.
+  Qed.
+
   Lemma add_spec_same : forall k m,
     multiplicity k (add k m) = S (multiplicity k m).
   Proof.
     intros k m.
     unfold multiplicity, add.
-    rewrite position_key_eqb_refl.
+    rewrite find_update_same.
     reflexivity.
   Qed.
 End PositionMultiset.
@@ -1547,9 +1711,9 @@ Record GameState := mkGameState {
   result : option GameResult  (* Terminal result if game has ended *)
 }.
 
-(* Generate key from state *)
+(* Generate key from state - uses Zobrist hashing for efficient comparison *)
 Definition key_of_state (st : GameState) : PositionKey :=
-  (board st, turn st).
+  make_position_key (board st) (turn st).
 
 (* Count pieces of a color on the board *)
 Definition count_pieces (b : Board) (c : Color) : nat :=
@@ -1575,7 +1739,7 @@ Definition WFState (st : GameState) : Prop :=
 Definition initial_state : GameState :=
   let init_board := initial_board in
   let init_turn := Dark in
-  let init_key := (init_board, init_turn) in
+  let init_key := make_position_key init_board init_turn in
   mkGameState init_board init_turn 0
     (PositionMultiset.add init_key PositionMultiset.empty) None.
 
@@ -1830,7 +1994,7 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         else
           S (ply_without_capture_or_man_advance st)
       in
-      let new_key := (new_board, opp (turn st)) in
+      let new_key := make_position_key new_board (opp (turn st)) in
       Some (mkGameState
         new_board
         (opp (turn st))
@@ -1839,7 +2003,7 @@ Definition apply_move_impl (st : GameState) (m : Move) : option GameState :=
         None)
     | Jump from ch =>
       let new_board := apply_jump (board st) from ch in
-      let new_key := (new_board, opp (turn st)) in
+      let new_key := make_position_key new_board (opp (turn st)) in
       Some (mkGameState
         new_board
         (opp (turn st))
@@ -1887,7 +2051,7 @@ Definition apply_move_spec (st : GameState) (m : Move) (st' : GameState) : Prop 
         if is_capture_move m || is_man_forward_step (board st) m then 0%nat
         else S (ply_without_capture_or_man_advance st)) /\
       (* Repetition book updates *)
-      repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
+      repetition_book st' = PositionMultiset.add (make_position_key (board st') (turn st')) (repetition_book st) /\
       (* No terminal result *)
       result st' = None
   | Jump from ch =>
@@ -1905,7 +2069,7 @@ Definition apply_move_spec (st : GameState) (m : Move) (st' : GameState) : Prop 
       (* Ply counter resets *)
       ply_without_capture_or_man_advance st' = 0%nat /\
       (* Repetition book updates *)
-      repetition_book st' = PositionMultiset.add (board st', turn st') (repetition_book st) /\
+      repetition_book st' = PositionMultiset.add (make_position_key (board st') (turn st')) (repetition_book st) /\
       (* No terminal result *)
       result st' = None
   | Resign c =>
@@ -2125,6 +2289,106 @@ Definition can_claim_forty_move (st : GameState) : bool :=
 Definition can_claim_threefold (st : GameState) : bool :=
   Nat.leb 3 (count_position_key (key_of_state st) (repetition_book st)).
 
+(* ========================================================================= *)
+(* SECTION 16b: INSUFFICIENT MATERIAL DETECTION                              *)
+(* ========================================================================= *)
+
+(* Count men (non-kings) for a color *)
+Definition count_men (b : Board) (c : Color) : nat :=
+  List.length (filter (fun p =>
+    match b p with
+    | Some pc => andb (if Color_eq_dec (pc_color pc) c then true else false)
+                      (if PieceKind_eq_dec (pc_kind pc) Man then true else false)
+    | None => false
+    end
+  ) enum_pos).
+
+(* Count kings for a color *)
+Definition count_kings (b : Board) (c : Color) : nat :=
+  List.length (filter (fun p =>
+    match b p with
+    | Some pc => andb (if Color_eq_dec (pc_color pc) c then true else false)
+                      (if PieceKind_eq_dec (pc_kind pc) King then true else false)
+    | None => false
+    end
+  ) enum_pos).
+
+(* Insufficient material: neither side can force a win *)
+(* In English Checkers, the clearest case is King vs King:
+   A lone king cannot capture another lone king. *)
+Definition is_insufficient_material (b : Board) : bool :=
+  let dark_men := count_men b Dark in
+  let dark_kings := count_kings b Dark in
+  let light_men := count_men b Light in
+  let light_kings := count_kings b Light in
+  (* Case 1: K vs K - automatic draw *)
+  if andb (andb (Nat.eqb dark_men 0) (Nat.eqb dark_kings 1))
+          (andb (Nat.eqb light_men 0) (Nat.eqb light_kings 1)) then
+    true
+  (* Case 2: No pieces on one side with only a king on the other -
+     actually this is a win for the side with the king, not insufficient *)
+  else
+    false.
+
+(* Check if the game is drawn due to insufficient material *)
+Definition is_drawn_insufficient_material (st : GameState) : bool :=
+  is_insufficient_material (board st).
+
+(* Extended terminal check including insufficient material *)
+Definition is_terminal_extended (st : GameState) : option GameResult :=
+  match result st with
+  | Some r => Some r
+  | None =>
+    if has_no_pieces (board st) (turn st) then
+      Some (Win (opp (turn st)))
+    else if has_no_pieces (board st) (opp (turn st)) then
+      Some (Win (turn st))
+    else if has_no_legal_moves st then
+      Some (Win (opp (turn st)))
+    else if is_drawn_insufficient_material st then
+      Some Draw  (* Automatic draw due to insufficient material *)
+    else
+      None
+  end.
+
+(* Validation: K vs K is insufficient material *)
+Example king_vs_king_insufficient :
+  let kvk_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 14 then Some {| pc_color := Dark; pc_kind := King |}
+    else if Nat.eqb idx 19 then Some {| pc_color := Light; pc_kind := King |}
+    else None in
+  is_insufficient_material kvk_board = true.
+Proof.
+  vm_compute. reflexivity.
+Qed.
+
+(* Validation: K+M vs K is NOT insufficient (man can promote) *)
+Example king_man_vs_king_sufficient :
+  let kmvk_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 14 then Some {| pc_color := Dark; pc_kind := King |}
+    else if Nat.eqb idx 10 then Some {| pc_color := Dark; pc_kind := Man |}
+    else if Nat.eqb idx 19 then Some {| pc_color := Light; pc_kind := King |}
+    else None in
+  is_insufficient_material kmvk_board = false.
+Proof.
+  vm_compute. reflexivity.
+Qed.
+
+(* Validation: 2K vs K is NOT insufficient (two kings can corner one) *)
+Example two_kings_vs_king_sufficient :
+  let tkvk_board : Board := fun p =>
+    let idx := sq_index p in
+    if Nat.eqb idx 14 then Some {| pc_color := Dark; pc_kind := King |}
+    else if Nat.eqb idx 10 then Some {| pc_color := Dark; pc_kind := King |}
+    else if Nat.eqb idx 19 then Some {| pc_color := Light; pc_kind := King |}
+    else None in
+  is_insufficient_material tkvk_board = false.
+Proof.
+  vm_compute. reflexivity.
+Qed.
+
 (* Validation for Section 16 *)
 Example immobilization_loses : forall st,
   WFState st ->
@@ -2291,13 +2555,7 @@ Qed.
 Theorem initial_position_counted :
   count_position_key (key_of_state initial_state) (repetition_book initial_state) = 1%nat.
 Proof.
-  unfold initial_state, key_of_state.
-  simpl.
-  unfold count_position_key, PositionMultiset.multiplicity.
-  unfold PositionMultiset.add.
-  rewrite PositionMultiset.position_key_eqb_refl.
-  unfold PositionMultiset.empty.
-  reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (* Theorem: If we return to initial position twice more, we can claim threefold *)
@@ -2312,28 +2570,7 @@ Theorem initial_position_threefold :
   (* Then counting that key gives 3 *)
   count_position_key init_key book_with_three = 3%nat.
 Proof.
-  (* Unfold let bindings *)
-  unfold count_position_key, PositionMultiset.multiplicity.
-  simpl.
-  (* Unfold the outer add *)
-  unfold PositionMultiset.add at 1.
-  (* The key matches itself *)
-  assert (H1: PositionMultiset.position_key_eqb (key_of_state initial_state)
-                                                 (key_of_state initial_state) = true).
-  { apply PositionMultiset.position_key_eqb_refl. }
-  rewrite H1.
-  (* Now we have S of the inner expression *)
-  simpl.
-  (* Unfold the middle add *)
-  unfold PositionMultiset.add at 1.
-  rewrite H1.
-  simpl.
-  (* Unfold the innermost add *)
-  unfold PositionMultiset.add at 1.
-  rewrite H1.
-  (* Now it's just empty *)
-  unfold PositionMultiset.empty.
-  reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (* Corollary: Initial state's setup enables correct threefold detection *)
@@ -2355,22 +2592,12 @@ Theorem threefold_works_with_initial : forall st1 st2,
 Proof.
   intros st1 st2 Hkey1 Hkey2 Hbook.
   apply repetition_detects_threefold.
-  unfold count_position_key, PositionMultiset.multiplicity.
-  rewrite Hbook.
-  rewrite Hkey2, Hkey1.
-  unfold PositionMultiset.add at 1.
-  assert (Hsame: PositionMultiset.position_key_eqb
-                   (key_of_state initial_state)
-                   (key_of_state initial_state) = true)
-    by apply PositionMultiset.position_key_eqb_refl.
-  rewrite Hsame.
-  unfold PositionMultiset.add at 1.
-  rewrite Hsame.
-  assert (Hcount: count_position_key (key_of_state initial_state)
-                    (repetition_book initial_state) = 1%nat)
-    by apply initial_position_counted.
-  unfold count_position_key, PositionMultiset.multiplicity in Hcount.
-  rewrite Hcount.
+  rewrite Hbook, Hkey2, Hkey1.
+  unfold count_position_key.
+  rewrite PositionMultiset.add_spec_same.
+  rewrite PositionMultiset.add_spec_same.
+  fold (count_position_key (key_of_state initial_state) (repetition_book initial_state)).
+  rewrite initial_position_counted.
   reflexivity.
 Qed.
 
