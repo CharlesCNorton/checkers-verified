@@ -1874,6 +1874,7 @@ Proof.
     rewrite initial_light_count. apply le_n.
 Qed.
 
+
 (* ========================================================================= *)
 (* SECTION 11: MOVE REPRESENTATION                                          *)
 (* ========================================================================= *)
@@ -2208,6 +2209,310 @@ Proof.
   unfold apply_move_impl.
   rewrite Hlegal.
   destruct m; eexists; reflexivity.
+Qed.
+
+
+(* ---- WFState preservation ---- *)
+
+(* Helper for WFState proofs: filter with stronger predicate is shorter *)
+Lemma filter_subset_length_local : forall A (P Q : A -> bool) (l : list A),
+  (forall x, In x l -> P x = true -> Q x = true) ->
+  (List.length (filter P l) <= List.length (filter Q l))%nat.
+Proof.
+  intros A P Q l H.
+  induction l as [|h t IH].
+  - reflexivity.
+  - simpl.
+    destruct (P h) eqn:HP, (Q h) eqn:HQ.
+    + simpl. apply le_n_S. apply IH. intros. apply H; [right|]; assumption.
+    + assert (Q h = true) by (apply H; [left; reflexivity|exact HP]).
+      congruence.
+    + apply le_S. apply IH. intros. apply H; [right|]; assumption.
+    + apply IH. intros. apply H; [right|]; assumption.
+Qed.
+
+(* Helper: count_pieces on board_set to None cannot increase *)
+Lemma count_pieces_remove_le : forall b p c,
+  (count_pieces (board_set b p None) c <= count_pieces b c)%nat.
+Proof.
+  intros b p c.
+  unfold count_pieces.
+  apply filter_subset_length_local.
+  intros x _ Hf.
+  unfold board_set in Hf.
+  destruct (equiv_dec p x) as [e|n].
+  - simpl in Hf. discriminate.
+  - exact Hf.
+Qed.
+
+(* Helper: fold_left of board_set None doesn't increase count *)
+Lemma count_pieces_fold_remove_le : forall caps b c,
+  (count_pieces (fold_left (fun b' over => board_set b' over None) caps b) c <= count_pieces b c)%nat.
+Proof.
+  induction caps as [|cap caps IH]; intros b c.
+  - simpl. lia.
+  - simpl. apply Nat.le_trans with (count_pieces (board_set b cap None) c).
+    + apply IH.
+    + apply count_pieces_remove_le.
+Qed.
+
+(* Key helper: removing a piece of color c strictly decreases count c *)
+Lemma count_pieces_remove_lt : forall b p pc c,
+  b p = Some pc ->
+  pc_color pc = c ->
+  (S (count_pieces (board_set b p None) c) <= count_pieces b c)%nat.
+Proof.
+  intros b p pc c Hfrom Hcolor.
+  unfold count_pieces.
+  assert (Hin: In p enum_pos) by apply enum_pos_complete.
+  assert (Hnd: NoDup enum_pos) by apply enum_pos_nodup.
+  set (l := enum_pos) in *.
+  clearbody l.
+  induction l as [|q qs IHq].
+  - contradiction.
+  - simpl. unfold board_set at 1.
+    inversion_clear Hnd as [|? ? Hnotin Hnd'].
+    destruct (equiv_dec p q) as [e|ne].
+    + red in e. subst q. rewrite Hfrom. rewrite <- Hcolor.
+      destruct (Color_eq_dec (pc_color pc) (pc_color pc)) as [_|n]; [|exfalso; apply n; reflexivity].
+      simpl. apply le_n_S.
+      apply filter_subset_length_local.
+      intros x _ Hf. unfold board_set in Hf.
+      destruct (equiv_dec p x) as [e2|ne2]; [discriminate | exact Hf].
+    + destruct Hin as [Hin|Hin].
+      * exfalso. apply ne. red. symmetry. exact Hin.
+      * destruct (b q) as [pc2|] eqn:E.
+        -- destruct (Color_eq_dec (pc_color pc2) c); simpl.
+           ++ apply le_n_S. apply IHq; assumption.
+           ++ apply IHq; assumption.
+        -- apply IHq; assumption.
+Qed.
+
+(* Helper: board_set to Some of non-matching color doesn't increase count *)
+Lemma count_pieces_set_other_le : forall b p pc c,
+  pc_color pc <> c ->
+  (count_pieces (board_set b p (Some pc)) c <= count_pieces b c)%nat.
+Proof.
+  intros b p pc c Hneq.
+  unfold count_pieces. apply filter_subset_length_local.
+  intros x _ Hf. unfold board_set in Hf.
+  destruct (equiv_dec p x) as [e|ne].
+  - destruct (Color_eq_dec (pc_color pc) c); [contradiction | discriminate].
+  - exact Hf.
+Qed.
+
+(* Helper: filter on board_set is same when p not in list *)
+Lemma filter_board_set_notin : forall l b p v c,
+  ~ In p l ->
+  filter (fun q => match board_set b p v q with
+    | Some pc => if Color_eq_dec (pc_color pc) c then true else false
+    | None => false end) l =
+  filter (fun q => match b q with
+    | Some pc => if Color_eq_dec (pc_color pc) c then true else false
+    | None => false end) l.
+Proof.
+  induction l as [|h t IH]; intros.
+  - reflexivity.
+  - simpl. assert (h <> p) by (intro; apply H; left; exact H0).
+    unfold board_set at 1.
+    destruct (equiv_dec p h) as [e|ne].
+    + red in e. symmetry in e. contradiction.
+    + rewrite IH; [reflexivity|]. intro. apply H. right. exact H1.
+Qed.
+
+(* Helper: board_set to Some increases count by at most 1 *)
+Lemma count_pieces_set_some_le : forall b p pc c,
+  (count_pieces (board_set b p (Some pc)) c <= S (count_pieces b c))%nat.
+Proof.
+  intros b p pc c.
+  unfold count_pieces.
+  assert (Hin: In p enum_pos) by apply enum_pos_complete.
+  assert (Hnd: NoDup enum_pos) by apply enum_pos_nodup.
+  set (l := enum_pos) in *. clearbody l.
+  induction l as [|q qs IHq].
+  - contradiction.
+  - simpl. inversion_clear Hnd as [|? ? Hnotin Hnd'].
+    unfold board_set at 1.
+    destruct (equiv_dec p q) as [eq_pq|neq_pq].
+    + (* q = p *)
+      red in eq_pq. subst q.
+      destruct (Color_eq_dec (pc_color pc) c).
+      * simpl.
+        rewrite filter_board_set_notin by assumption.
+        destruct (b p) as [pc2|] eqn:E.
+        -- destruct (Color_eq_dec (pc_color pc2) c); simpl; auto with arith.
+        -- auto with arith.
+      * rewrite filter_board_set_notin by assumption.
+        destruct (b p) as [pc2|] eqn:E.
+        -- destruct (Color_eq_dec (pc_color pc2) c); simpl; auto with arith.
+        -- auto with arith.
+    + (* q <> p *)
+      destruct Hin as [Hin|Hin]; [exfalso; apply neq_pq; red; symmetry; exact Hin|].
+      destruct (b q) as [pc2|] eqn:E.
+      * destruct (Color_eq_dec (pc_color pc2) c); simpl.
+        -- apply le_n_S. apply IHq; assumption.
+        -- apply IHq; assumption.
+      * apply IHq; assumption.
+Qed.
+
+(* Key helper: remove from, place at to with same-color piece — count doesn't increase *)
+Lemma count_pieces_replace_le : forall b from to pc pc' c,
+  b from = Some pc ->
+  pc_color pc' = pc_color pc ->
+  (count_pieces (board_set (board_set b from None) to (Some pc')) c <= count_pieces b c)%nat.
+Proof.
+  intros b from to pc pc' c Hfrom Hcolor.
+  destruct (Color_eq_dec (pc_color pc) c).
+  - (* pc has color c: removing from strictly decreases, placing increases by at most 1 *)
+    apply Nat.le_trans with (S (count_pieces (board_set b from None) c)).
+    + apply count_pieces_set_some_le.
+    + apply count_pieces_remove_lt with (pc := pc); assumption.
+  - (* pc doesn't have color c, so pc' doesn't either *)
+    apply Nat.le_trans with (count_pieces (board_set b from None) c).
+    + apply count_pieces_set_other_le. rewrite Hcolor. assumption.
+    + apply count_pieces_remove_le.
+Qed.
+
+(* Helper: count after step application *)
+Lemma count_pieces_apply_step_le : forall b from to pc c,
+  piece_at b from = Some pc ->
+  (count_pieces (apply_step b from to) c <= count_pieces b c)%nat.
+Proof.
+  intros b from to pc c Hfrom.
+  unfold apply_step, piece_at, board_get in *. rewrite Hfrom.
+  set (pc' := if reaches_crown_head pc to then promote_piece pc else pc).
+  assert (Hcolor: pc_color pc' = pc_color pc).
+  { unfold pc'. destruct (reaches_crown_head pc to); [|reflexivity].
+    unfold promote_piece. simpl. reflexivity. }
+  apply count_pieces_replace_le with (pc := pc); assumption.
+Qed.
+
+(* Helper: count after jump application *)
+Lemma count_pieces_apply_jump_le : forall b from ch pc c,
+  piece_at b from = Some pc ->
+  (count_pieces (apply_jump b from ch) c <= count_pieces b c)%nat.
+Proof.
+  intros b from ch pc c Hfrom.
+  unfold apply_jump, piece_at, board_get in *. rewrite Hfrom.
+  set (last_pos := last_landing from ch).
+  set (pc' := if reaches_crown_head pc last_pos then promote_piece pc else pc).
+  set (b_cleared := fold_left (fun b' over => board_set b' over None) (captures_of ch) b).
+  assert (Hcolor: pc_color pc' = pc_color pc).
+  { unfold pc'. destruct (reaches_crown_head pc last_pos); [|reflexivity].
+    unfold promote_piece. simpl. reflexivity. }
+  (* Strategy: final board sets at most one square to Some, rest are None or unchanged.
+     count(final, c) ≤ S(count(board_set b_cleared from None, c))  [set_some_le]
+                     ≤ S(count(b_cleared, c))                       [remove_le]
+                     ≤ S(count(b, c))                                [fold_remove_le]
+     But we need ≤ count(b, c), not S. The missing step: b has pc at from,
+     so count(b, c) ≥ 1 when pc_color pc = c, giving us room.
+     When pc_color pc ≠ c, pc' also has color ≠ c, so set_some doesn't increase count c. *)
+  (* The final board = board_set (board_set b_cleared from None) last_pos (Some pc').
+     This is the same as replacing from→last_pos in b_cleared.
+     count_pieces_replace_le needs b_cleared from = Some something with same color as pc'.
+     We prove fold_left of board_set None preserves positions not in the list. *)
+  assert (Hfold_preserve: forall caps b0 p,
+    ~ In p caps -> fold_left (fun b' over => board_set b' over None) caps b0 p = b0 p).
+  { induction caps as [|cap caps' IHcaps]; intros b0 p Hnotin.
+    - reflexivity.
+    - simpl. rewrite IHcaps.
+      + unfold board_set. destruct (equiv_dec cap p) as [e|ne].
+        * red in e. exfalso. apply Hnotin. left. exact e.
+        * reflexivity.
+      + intro; apply Hnotin; right; assumption. }
+  (* Helper: if p ∈ caps and b p = Some pc with pc_color pc = c,
+     then S (count (fold_left set_None caps b) c) ≤ count b c *)
+  assert (Hboard_set_self: forall b0 p0, board_set b0 p0 None p0 = None).
+  { intros. unfold board_set. destruct (equiv_dec p0 p0) as [_|n0]; [reflexivity|].
+    exfalso. apply n0. reflexivity. }
+  assert (Hfold_lt: forall caps b0 p0 pc0 c0,
+    In p0 caps -> b0 p0 = Some pc0 -> pc_color pc0 = c0 ->
+    (S (count_pieces (fold_left (fun b' over => board_set b' over None) caps b0) c0) <=
+     count_pieces b0 c0)%nat).
+  { induction caps as [|cap caps' IHcaps]; intros b0 p0 pc0 c0 Hin Hb0 Hpc0.
+    - contradiction.
+    - simpl in Hin. destruct Hin as [Heq|Hin'].
+      + subst cap. simpl.
+        apply Nat.le_trans with (S (count_pieces (board_set b0 p0 None) c0)).
+        * apply le_n_S. apply count_pieces_fold_remove_le.
+        * apply count_pieces_remove_lt with (pc := pc0); assumption.
+      + simpl.
+        destruct (Position_eq_dec cap p0) as [Heq2|Hneq2].
+        * (* cap = p0: board_set b0 p0 None sets p0 to None.
+             fold_left over caps' starting from (board_set b0 p0 None).
+             p0 is also in caps' (Hin'). But board_set b0 p0 None p0 = None.
+             We can still bound: S(count(fold caps' (set b0 p0 None)) c0) ≤ count b0 c0.
+             Use: count(fold caps' (set b0 p0 None)) ≤ count(set b0 p0 None) [fold_remove_le]
+                  S(count(set b0 p0 None)) ≤ count b0 c0               [remove_lt] *)
+          rewrite Heq2.
+          apply Nat.le_trans with (count_pieces (board_set b0 p0 None) c0).
+          -- apply count_pieces_fold_remove_le.
+          -- apply count_pieces_remove_lt with (pc := pc0); assumption.
+        * (* cap ≠ p0 *)
+          assert (Hb0': board_set b0 cap None p0 = Some pc0).
+          { unfold board_set. destruct (equiv_dec cap p0) as [e|ne].
+            - exfalso. apply Hneq2. red in e. exact e.
+            - exact Hb0. }
+          apply Nat.le_trans with (count_pieces (board_set b0 cap None) c0).
+          -- apply IHcaps with (p0 := p0) (pc0 := pc0); assumption.
+          -- apply count_pieces_remove_le. }
+  destruct (In_dec Position_eq_dec from (captures_of ch)) as [Hin_cap|Hnotin_cap].
+  - (* from is in captures — degenerate but possible. *)
+    destruct (Color_eq_dec (pc_color pc) c) as [Hpcc|Hpcc].
+    + apply Nat.le_trans with (S (count_pieces (board_set b_cleared from None) c)).
+      * apply count_pieces_set_some_le.
+      * apply Nat.le_trans with (S (count_pieces b_cleared c)).
+        -- apply le_n_S. apply count_pieces_remove_le.
+        -- apply Hfold_lt with (p0 := from) (pc0 := pc); assumption.
+    + apply Nat.le_trans with (count_pieces (board_set b_cleared from None) c).
+      * apply count_pieces_set_other_le. rewrite Hcolor. assumption.
+      * apply Nat.le_trans with (count_pieces b_cleared c).
+        -- apply count_pieces_remove_le.
+        -- apply count_pieces_fold_remove_le.
+  - (* from not in captures — normal case. b_cleared from = b from = Some pc. *)
+    assert (Hbcleared_from: b_cleared from = Some pc).
+    { unfold b_cleared. rewrite Hfold_preserve; assumption. }
+    apply Nat.le_trans with (count_pieces b_cleared c).
+    + apply count_pieces_replace_le with (pc := pc); [exact Hbcleared_from|exact Hcolor].
+    + apply count_pieces_fold_remove_le.
+Qed.
+
+(* Main theorem: WFState is preserved by apply_move_impl *)
+Theorem WFState_preservation : forall st m st',
+  apply_move_impl st m = Some st' ->
+  WFState st ->
+  WFState st'.
+Proof.
+  intros st m st' Happly Hwf.
+  unfold apply_move_impl in Happly.
+  destruct (legal_move_impl st m) eqn:Hlegal; [|discriminate].
+  destruct m.
+  - (* Step from to *)
+    injection Happly as <-. simpl.
+    destruct Hwf as [Hd [Hl _]].
+    unfold legal_move_impl in Hlegal. simpl in Hlegal.
+    destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+    destruct (Color_eq_dec (pc_color pc) (turn st)); [|discriminate].
+    split; [|split; [|exact I]].
+    + apply Nat.le_trans with (count_pieces (board st) Dark); [|exact Hd].
+      apply count_pieces_apply_step_le with (pc := pc). exact Hpc.
+    + apply Nat.le_trans with (count_pieces (board st) Light); [|exact Hl].
+      apply count_pieces_apply_step_le with (pc := pc). exact Hpc.
+  - (* Jump from chain *)
+    injection Happly as <-. simpl.
+    destruct Hwf as [Hd [Hl _]].
+    unfold legal_move_impl in Hlegal. simpl in Hlegal.
+    destruct (piece_at (board st) p) as [pc|] eqn:Hpc; [|discriminate].
+    destruct (Color_eq_dec (pc_color pc) (turn st)); [|discriminate].
+    split; [|split; [|exact I]].
+    + apply Nat.le_trans with (count_pieces (board st) Dark); [|exact Hd].
+      apply count_pieces_apply_jump_le with (pc := pc). exact Hpc.
+    + apply Nat.le_trans with (count_pieces (board st) Light); [|exact Hl].
+      apply count_pieces_apply_jump_le with (pc := pc). exact Hpc.
+  - (* Resign *)
+    injection Happly as <-. simpl. exact Hwf.
+  - (* AgreeDraw *)
+    injection Happly as <-. simpl. exact Hwf.
 Qed.
 
 (* ========================================================================= *)
