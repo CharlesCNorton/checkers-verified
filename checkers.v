@@ -3355,7 +3355,7 @@ Proof.
   rewrite Hk1, Hk2.
   rewrite <- Nat.mul_add_distr_l.
   rewrite Nat.mul_comm.
-  apply Nat.mod_mul. auto.
+  apply Nat.Div0.mod_mul.
 Qed.
 
 (* Basic arithmetic: odd + odd = even (mod 2) *)
@@ -3377,7 +3377,7 @@ Proof.
   }
   rewrite H.
   rewrite Nat.mul_comm.
-  apply Nat.mod_mul. auto.
+  apply Nat.Div0.mod_mul.
 Qed.
 
 (* Positions are on dark squares *)
