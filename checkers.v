@@ -4648,7 +4648,7 @@ Example two_kings_vs_one_final :
   end.
 Proof. vm_compute. eexists. reflexivity. Qed.
 
-Theorem complete_game_verified : True.
+Theorem game_section_complete : True.
 Proof. exact I. Qed.
 
 (* The ultimate verification: Checkers is mathematically deterministic *)
