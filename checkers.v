@@ -1529,6 +1529,108 @@ Proof.
   intro ch. reflexivity.
 Qed.
 
+(* ---- Position equality boolean reflection ---- *)
+
+Lemma position_eqb_refl : forall p, position_eqb p p = true.
+Proof.
+  intro p. unfold position_eqb.
+  destruct (Position_eq_dec p p) as [_|n]; [reflexivity|].
+  exfalso. apply n. reflexivity.
+Qed.
+
+Lemma position_eqb_eq : forall p1 p2, position_eqb p1 p2 = true <-> p1 = p2.
+Proof.
+  intros p1 p2. unfold position_eqb.
+  destruct (Position_eq_dec p1 p2) as [e|n].
+  - split; intro; [exact e | reflexivity].
+  - split; intro H; [discriminate | contradiction].
+Qed.
+
+Lemma position_eqb_neq : forall p1 p2, position_eqb p1 p2 = false <-> p1 <> p2.
+Proof.
+  intros p1 p2. unfold position_eqb.
+  destruct (Position_eq_dec p1 p2) as [e|n].
+  - split; intro H; [discriminate | contradiction].
+  - split; intro; [exact n | reflexivity].
+Qed.
+
+(* Helper: existsb (position_eqb p) captures = true iff In p captures *)
+Lemma existsb_position_eqb_In : forall p caps,
+  existsb (position_eqb p) caps = true <-> In p caps.
+Proof.
+  intros p caps. induction caps as [|c cs IH].
+  - simpl. split; [discriminate | contradiction].
+  - simpl. rewrite Bool.orb_true_iff. split.
+    + intros [H|H].
+      * left. symmetry. apply position_eqb_eq. exact H.
+      * right. apply IH. exact H.
+    + intros [H|H].
+      * left. subst. apply position_eqb_refl.
+      * right. apply IH. exact H.
+Qed.
+
+(* ---- NoDup of captures within a valid chain ---- *)
+
+(* Strengthened lemma: valid_jump_chain_rec preserves NoDup of captures *)
+Lemma valid_jump_chain_rec_NoDup : forall b pc from ch captured vacated,
+  valid_jump_chain_rec b pc from ch captured vacated = true ->
+  NoDup captured ->
+  NoDup (captures_of ch) /\
+  (forall p, In p (captures_of ch) -> ~ In p captured).
+Proof.
+  intros b pc from ch.
+  revert from.
+  induction ch as [|link rest IH]; intros from captured vacated Hvalid Hnd.
+  - (* Base case: empty chain *)
+    simpl. split; [constructor | intros _ []].
+  - (* Inductive case *)
+    simpl in Hvalid.
+    destruct (is_empty_transient b (link_to link) vacated) eqn:Hempty; [|discriminate].
+    destruct (has_opponent_transient b (pc_color pc) (link_over link) captured) eqn:Hopp; [|discriminate].
+    destruct (diag_jump_dec from (link_over link) (link_to link)); [|discriminate].
+    (* has_opponent_transient returned true, so link_over link is NOT in captured *)
+    assert (Hnot_in: ~ In (link_over link) captured).
+    { intro Hin. unfold has_opponent_transient in Hopp.
+      apply existsb_position_eqb_In in Hin.
+      rewrite Hin in Hopp. discriminate. }
+    (* Now handle Man vs King cases to get recursive call *)
+    assert (Hrec: valid_jump_chain_rec b pc (link_to link) rest
+                    (link_over link :: captured) (from :: vacated) = true).
+    { destruct (pc_kind pc) eqn:Ekind.
+      - (* Man *)
+        destruct (forward_of_dec (pc_color pc) (rank from) (rank (link_to link))); [|discriminate].
+        destruct (reaches_crown_head pc (link_to link) &&
+                  negb match rest with [] => true | _ :: _ => false end); [discriminate|].
+        exact Hvalid.
+      - (* King *)
+        exact Hvalid. }
+    assert (Hnd': NoDup (link_over link :: captured)).
+    { constructor; assumption. }
+    specialize (IH (link_to link) (link_over link :: captured) (from :: vacated) Hrec Hnd').
+    destruct IH as [IHnd IHdisj].
+    simpl. split.
+    + (* NoDup (link_over link :: captures_of rest) *)
+      constructor.
+      * intro Hin. apply (IHdisj (link_over link) Hin). left. reflexivity.
+      * exact IHnd.
+    + (* Disjointness with captured *)
+      intros p [Hp|Hp].
+      * subst. exact Hnot_in.
+      * intro Hin. apply (IHdisj p Hp). right. exact Hin.
+Qed.
+
+(* Main theorem: captures within a valid chain have no duplicates *)
+Theorem captures_NoDup : forall b pc from ch,
+  valid_jump_chain b pc from ch = true ->
+  NoDup (captures_of ch).
+Proof.
+  intros b pc from ch H.
+  unfold valid_jump_chain in H.
+  assert (Hnd: NoDup (@nil Position)) by constructor.
+  pose proof (@valid_jump_chain_rec_NoDup b pc from ch (@nil Position) (@nil Position) H Hnd) as [H1 _].
+  exact H1.
+Qed.
+
 (* ========================================================================= *)
 (* SECTION 9: FORCING RULES (MANDATORY CAPTURE)                             *)
 (* ========================================================================= *)
