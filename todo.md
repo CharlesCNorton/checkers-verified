@@ -1,7 +1,7 @@
 # Checkers Verified — TODO
 
-1. Prove `WFState` preservation: `apply_move_impl st m = Some st' → WFState st → WFState st'`
-2. Prove `gen_steps` completeness: every legal step is in `gen_steps st`
+1. ~~Prove `WFState` preservation~~ ✓
+2. ~~Prove `gen_steps` completeness~~ ✓
 3. Prove `gen_steps` soundness without requiring caller to supply `exists_jump_any = false`
 4. Prove `gen_jumps` soundness: every move in `gen_jumps st` is legal
 5. Prove `gen_jumps` completeness: every legal jump is in `gen_jumps st`

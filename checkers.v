@@ -4619,6 +4619,31 @@ Proof.
   exact Hstep.
 Qed.
 
+(* gen_steps completeness: every legal step is in gen_steps *)
+Theorem gen_steps_complete : forall st from to,
+  WFState st ->
+  legal_move_impl st (Step from to) = true ->
+  In (Step from to) (gen_steps st).
+Proof.
+  intros st from to Hwf Hlegal.
+  unfold legal_move_impl in Hlegal. simpl in Hlegal.
+  destruct (piece_at (board st) from) as [pc|] eqn:Hpc; [|discriminate].
+  destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hcolor|]; [|discriminate].
+  destruct (exists_jump_any (board st) (turn st)) eqn:Hjump; [discriminate|].
+  unfold gen_steps.
+  apply in_flat_map.
+  exists from.
+  split.
+  - apply enum_pos_complete.
+  - rewrite Hpc.
+    destruct (Color_eq_dec (pc_color pc) (turn st)) as [_|n]; [|contradiction].
+    unfold gen_steps_from.
+    apply filter_In.
+    split.
+    + apply in_map. apply enum_pos_complete.
+    + simpl. exact Hlegal.
+Qed.
+
 (* Theorem: legal_move_impl correctly implements legal_move_spec *)
 Theorem legal_move_impl_correct : forall st m,
   legal_move_impl st m = true <-> legal_move_spec st m.
