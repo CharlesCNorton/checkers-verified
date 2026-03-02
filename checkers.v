@@ -2445,8 +2445,8 @@ Proof.
              Use: count(fold caps' (set b0 p0 None)) ≤ count(set b0 p0 None) [fold_remove_le]
                   S(count(set b0 p0 None)) ≤ count b0 c0               [remove_lt] *)
           rewrite Heq2.
-          apply Nat.le_trans with (count_pieces (board_set b0 p0 None) c0).
-          -- apply count_pieces_fold_remove_le.
+          apply Nat.le_trans with (S (count_pieces (board_set b0 p0 None) c0)).
+          -- apply le_n_S. apply count_pieces_fold_remove_le.
           -- apply count_pieces_remove_lt with (pc := pc0); assumption.
         * (* cap ≠ p0 *)
           assert (Hb0': board_set b0 cap None p0 = Some pc0).
