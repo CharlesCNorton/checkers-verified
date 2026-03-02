@@ -4619,6 +4619,33 @@ Proof.
   exact Hstep.
 Qed.
 
+(* gen_steps soundness without forcing precondition *)
+Theorem gen_steps_sound : forall st from to,
+  WFState st ->
+  In (Step from to) (gen_steps st) ->
+  exists pc, piece_at (board st) from = Some pc /\
+             pc_color pc = turn st /\
+             step_impl (board st) pc from to = true.
+Proof.
+  intros st from to Hwf Hin.
+  unfold gen_steps in Hin.
+  apply in_flat_map in Hin.
+  destruct Hin as [from' [Hfrom' Hin]].
+  destruct (piece_at (board st) from') as [pc|] eqn:Hpiece; [|contradiction].
+  destruct (Color_eq_dec (pc_color pc) (turn st)) as [Hcolor|]; [|contradiction].
+  unfold gen_steps_from in Hin.
+  apply filter_In in Hin.
+  destruct Hin as [HInMap Hstep].
+  apply in_map_iff in HInMap.
+  destruct HInMap as [to' [Heq HInTo']].
+  injection Heq as <- <-.
+  simpl in Hstep.
+  exists pc.
+  split; [exact Hpiece|].
+  split; [exact Hcolor|].
+  exact Hstep.
+Qed.
+
 (* gen_steps completeness: every legal step is in gen_steps *)
 Theorem gen_steps_complete : forall st from to,
   WFState st ->
