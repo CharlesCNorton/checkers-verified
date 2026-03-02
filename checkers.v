@@ -5140,3 +5140,208 @@ Proof.
     + reflexivity.
   - reflexivity.
 Qed.
+
+(* ========================================================================= *)
+(* gen_jumps soundness: every move in gen_jumps is legal                      *)
+(* ========================================================================= *)
+
+(* Helper: find_single_jumps_transient results satisfy the transient checks *)
+Lemma find_single_jumps_transient_spec : forall b pc from captured vacated over to,
+  In (over, to) (find_single_jumps_transient b pc from captured vacated) ->
+  has_opponent_transient b (pc_color pc) over captured = true /\
+  is_empty_transient b to vacated = true /\
+  diag_jump_dec from over to = true /\
+  match pc_kind pc with Man => forward_of_dec (pc_color pc) (rank from) (rank to) = true | King => True end.
+Proof.
+  intros b pc from captured vacated over to Hin.
+  unfold find_single_jumps_transient in Hin.
+  apply in_flat_map in Hin.
+  destruct Hin as [over' [Hover' Hin]].
+  destruct (has_opponent_transient b (pc_color pc) over' captured) eqn:Hopp; [|contradiction].
+  apply in_map_iff in Hin.
+  destruct Hin as [[over'' to''] [Heq Hfilt]].
+  injection Heq as <- <-.
+  apply filter_In in Hfilt.
+  destruct Hfilt as [_ Hcond].
+  repeat rewrite andb_true_iff in Hcond.
+  destruct Hcond as [[Hempty Hdiag] Hdir].
+  repeat split; try assumption.
+  destruct (pc_kind pc); [exact Hdir | exact I].
+Qed.
+
+(* Key insight: build_maximal_chains_aux constructs chains that mirror
+   valid_jump_chain_rec exactly. We prove this by induction on fuel,
+   tracking the suffix that extends chain_so_far. *)
+
+(* Helper: find_single_jumps_transient returns [] iff exists_jump_from_transient is false *)
+Lemma find_single_jumps_transient_nil_iff : forall b pc from captured vacated,
+  find_single_jumps_transient b pc from captured vacated = [] <->
+  exists_jump_from_transient b pc from captured vacated = false.
+Proof.
+  intros b pc from captured vacated.
+  unfold find_single_jumps_transient, exists_jump_from_transient.
+  split; intro H.
+  - (* [] -> false *)
+    apply Bool.not_true_iff_false. intro Habs.
+    rewrite existsb_exists in Habs.
+    destruct Habs as [over [Hover Habs]].
+    destruct (has_opponent_transient b (pc_color pc) over captured) eqn:Hopp; [|discriminate].
+    rewrite existsb_exists in Habs.
+    destruct Habs as [to [Hto Hcond]].
+    cut (In (over, to) ([] : list (Position * Position))).
+    { intro Habs2. contradiction. }
+    rewrite <- H.
+    unfold find_single_jumps_transient.
+    apply in_flat_map. exists over. split; [exact Hover|].
+    rewrite Hopp.
+    apply in_map_iff. exists to. split; [reflexivity|].
+    apply filter_In. split; [exact Hto|exact Hcond].
+  - (* false -> [] *)
+    unfold exists_jump_from_transient in H.
+    unfold find_single_jumps_transient.
+    (* Both are over enum_pos. exists_jump_from_transient checks existsb,
+       find_single_jumps_transient builds flat_map. If existsb is false,
+       then for every over, the inner existsb is false, so every filter is [],
+       so every map is [], so flat_map is []. *)
+    apply flat_map_eq_nil.
+    intros over Hover.
+    destruct (has_opponent_transient b (pc_color pc) over captured) eqn:Hopp; [|reflexivity].
+    (* Inner existsb for this over is false *)
+    assert (Hinner: existsb (fun to =>
+      is_empty_transient b to vacated && diag_jump_dec from over to &&
+      match pc_kind pc with Man => forward_of_dec (pc_color pc) (rank from) (rank to) | King => true end)
+      enum_pos = false).
+    { apply Bool.not_true_iff_false. intro Habs.
+      apply Bool.not_true_iff_false in H. apply H.
+      rewrite existsb_exists. exists over. split; [exact Hover|].
+      rewrite Hopp. exact Habs. }
+    apply map_eq_nil.
+    destruct (filter _ _) as [|h t] eqn:Efilt; [reflexivity|].
+    exfalso.
+    apply Bool.not_true_iff_false in Hinner. apply Hinner.
+    rewrite existsb_exists. exists h.
+    assert (In h (h :: t)) by (left; reflexivity).
+    rewrite <- Efilt in H0. apply filter_In in H0. destruct H0. split; assumption.
+Qed.
+
+(* Helper: find_single_jumps_transient nonempty iff exists_jump_from_transient is true *)
+Lemma find_single_jumps_transient_nonempty_iff : forall b pc from captured vacated,
+  find_single_jumps_transient b pc from captured vacated <> [] <->
+  exists_jump_from_transient b pc from captured vacated = true.
+Proof.
+  intros b pc from captured vacated.
+  split; intro H.
+  - destruct (exists_jump_from_transient b pc from captured vacated) eqn:E.
+    + reflexivity.
+    + exfalso. apply H. apply find_single_jumps_transient_nil_iff. exact E.
+  - intro Habs. apply find_single_jumps_transient_nil_iff in Habs.
+    rewrite H in Habs. discriminate.
+Qed.
+
+(* ---------- Lemma 1: output of build_maximal_chains_aux extends chain_so_far ---------- *)
+
+Lemma build_aux_extends_prefix :
+  forall fuel b pc from csf cap vac ch,
+  In ch (build_maximal_chains_aux fuel b pc from csf cap vac) ->
+  exists suffix, ch = csf ++ suffix.
+Proof.
+  induction fuel as [|fuel' IH]; intros b pc from csf cap vac ch Hin.
+  - simpl in Hin. destruct Hin as [<-|[]]. exists []. rewrite app_nil_r. reflexivity.
+  - simpl in Hin.
+    destruct (reaches_crown_head pc from).
+    + destruct Hin as [<-|[]]. exists []. rewrite app_nil_r. reflexivity.
+    + destruct (find_single_jumps_transient b pc from cap vac) as [|j js].
+      * destruct Hin as [<-|[]]. exists []. rewrite app_nil_r. reflexivity.
+      * apply in_flat_map in Hin.
+        destruct Hin as [[over to] [_ Hrec]].
+        apply IH in Hrec. destruct Hrec as [suffix' Heq].
+        exists (existT _ over to :: suffix').
+        rewrite Heq. rewrite <- app_assoc. reflexivity.
+Qed.
+
+(* Universe polymorphism causes discriminate/injection to fail on sigma types.
+   Disable it for the gen_jumps soundness proof section. *)
+Unset Universe Polymorphism.
+
+(* Helper: when promotion applies, build_aux returns [csf] regardless of fuel *)
+Lemma build_aux_crown_returns_csf :
+  forall fuel b pc from csf cap vac,
+  reaches_crown_head pc from = true ->
+  build_maximal_chains_aux fuel b pc from csf cap vac = [csf].
+Proof.
+  destruct fuel; intros; simpl.
+  - reflexivity.
+  - rewrite H. reflexivity.
+Qed.
+
+(* ---------- Lemma 2: the suffix is a valid jump chain ---------- *)
+
+Lemma app_eq_self_nil : forall A (l suffix : list A),
+  l = l ++ suffix -> suffix = [].
+Proof.
+  intros A l suffix H.
+  assert (Hlen: List.length l = List.length (l ++ suffix)).
+  { f_equal. exact H. }
+  rewrite app_length in Hlen.
+  destruct suffix; [reflexivity | simpl in Hlen; lia].
+Qed.
+
+Lemma build_aux_suffix_valid :
+  forall fuel b pc from csf cap vac ch suffix,
+  In ch (build_maximal_chains_aux fuel b pc from csf cap vac) ->
+  ch = csf ++ suffix ->
+  valid_jump_chain_rec b pc from suffix cap vac = true.
+Proof.
+  induction fuel as [|fuel' IH]; intros b pc from csf cap vac ch suffix Hin Heq.
+  - simpl in Hin. destruct Hin as [<-|[]].
+    assert (suffix = []) by (apply app_eq_self_nil in Heq; exact Heq).
+    subst. reflexivity.
+  - simpl in Hin.
+    destruct (reaches_crown_head pc from) eqn:Hcrown.
+    + destruct Hin as [<-|[]].
+      assert (suffix = []) by (apply app_eq_self_nil in Heq; exact Heq).
+      subst. reflexivity.
+    + destruct (find_single_jumps_transient b pc from cap vac) as [|j js] eqn:Hjumps.
+      * destruct Hin as [<-|[]].
+        assert (suffix = []) by (apply app_eq_self_nil in Heq; exact Heq).
+        subst. reflexivity.
+      * apply in_flat_map in Hin.
+        destruct Hin as [[over to] [Hjin Hrec]].
+        simpl in Hrec.
+        assert (Hspec: In (over, to) (j :: js)) by exact Hjin.
+        rewrite <- Hjumps in Hspec.
+        pose proof (find_single_jumps_transient_spec _ _ _ _ _ _ _ Hspec) as [Hopp [Hempty [Hdiag Hdir]]].
+        (* The recursive call used csf' = csf ++ [link] *)
+        pose proof (build_aux_extends_prefix _ _ _ _ _ _ _ _ Hrec) as [suffix' Heq'].
+        assert (Hsuf: suffix = existT _ over to :: suffix').
+        { rewrite Heq' in Heq. rewrite <- app_assoc in Heq.
+          apply app_inv_head in Heq. simpl in Heq. symmetry. exact Heq. }
+        subst suffix. simpl.
+        rewrite Hempty. rewrite Hopp. rewrite Hdiag.
+        destruct (pc_kind pc) eqn:Ekind.
+        -- (* Man *)
+           rewrite Hdir.
+           destruct (reaches_crown_head pc (link_to (existT _ over to)) &&
+                     negb match suffix' with [] => true | _ :: _ => false end) eqn:Eprom.
+           { (* Eprom = true: contradiction — promotion forces suffix' = [] *)
+             apply andb_true_iff in Eprom. destruct Eprom as [Hcrown_to Hnotempty].
+             simpl in Hcrown_to.
+             assert (Hret: build_maximal_chains_aux fuel' b pc to
+               (csf ++ [existT _ over to]) (over :: cap) (from :: vac) =
+               [csf ++ [existT _ over to]]).
+             { apply build_aux_crown_returns_csf. exact Hcrown_to. }
+             rewrite Hret in Hrec. destruct Hrec as [Hch|[]].
+             (* Hch: ch = csf ++ [existT _ over to] *)
+             (* Heq': ch = (csf ++ [existT _ over to]) ++ suffix' *)
+             rewrite Hch in Heq'.
+             apply app_eq_self_nil in Heq'.
+             subst suffix'. simpl in Hnotempty. discriminate. }
+           simpl in Eprom. rewrite Eprom.
+           apply (IH b pc to (csf ++ [existT _ over to]) (over :: cap) (from :: vac) ch suffix');
+             assumption.
+        -- apply (IH b pc to (csf ++ [existT _ over to]) (over :: cap) (from :: vac) ch suffix');
+             assumption.
+Qed.
+
+
+
